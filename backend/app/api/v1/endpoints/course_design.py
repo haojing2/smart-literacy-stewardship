@@ -12,7 +12,7 @@ from app.services.project_service import ProjectNotFoundError
 
 router = APIRouter(prefix="/api/v1/projects", tags=["course-design"])
 
-
+# course design
 @router.get("/{project_id}/course-design")
 def get_course_design_state(
     project_id: int,

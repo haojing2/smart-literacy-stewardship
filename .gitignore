@@ -1,7 +1,8 @@
 .env
 .env.*
+.env.test.example
 !.env.example
 *.pyc
-.idea
-.test-venv
-tests
+.idea/
+.test-venv/
+tests/
