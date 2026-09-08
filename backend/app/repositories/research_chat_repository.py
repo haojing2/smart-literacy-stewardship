@@ -98,6 +98,46 @@ class ResearchChatRepository:
             .limit(1)
         )
 
+    def get_latest_owned_resource_session(
+        self, *, project_id: int, user_id: int
+    ) -> ResearchChatSession | None:
+        return self.db.scalar(
+            select(ResearchChatSession)
+            .join(CourseProject, CourseProject.id == ResearchChatSession.project_id)
+            .join(ResearchResource, ResearchResource.id == ResearchChatSession.resource_id)
+            .where(
+                ResearchChatSession.project_id == project_id,
+                ResearchChatSession.user_id == user_id,
+                ResearchChatSession.resource_id.is_not(None),
+                CourseProject.user_id == user_id,
+                CourseProject.is_deleted.is_(False),
+                ResearchResource.project_id == project_id,
+                ResearchResource.user_id == user_id,
+            )
+            .order_by(desc(ResearchChatSession.updated_at), desc(ResearchChatSession.id))
+            .limit(1)
+        )
+
+    def get_latest_owned_resource_session_for_resource(
+        self, *, project_id: int, resource_id: int, user_id: int
+    ) -> ResearchChatSession | None:
+        return self.db.scalar(
+            select(ResearchChatSession)
+            .join(CourseProject, CourseProject.id == ResearchChatSession.project_id)
+            .join(ResearchResource, ResearchResource.id == ResearchChatSession.resource_id)
+            .where(
+                ResearchChatSession.project_id == project_id,
+                ResearchChatSession.resource_id == resource_id,
+                ResearchChatSession.user_id == user_id,
+                CourseProject.user_id == user_id,
+                CourseProject.is_deleted.is_(False),
+                ResearchResource.project_id == project_id,
+                ResearchResource.user_id == user_id,
+            )
+            .order_by(desc(ResearchChatSession.updated_at), desc(ResearchChatSession.id))
+            .limit(1)
+        )
+
     def create_session(
         self, *, user_id: int, project_id: int, resource_id: int | None, title: str
     ) -> ResearchChatSession:
@@ -115,8 +155,13 @@ class ResearchChatRepository:
     def bind_evidence_card(
         self, session: ResearchChatSession, *, evidence_card: EvidenceCard
     ) -> None:
-        if session.evidence_card_id is None:
+        if session.evidence_card_id != evidence_card.id:
             session.evidence_card_id = evidence_card.id
+            self.db.flush()
+
+    def clear_evidence_card(self, session: ResearchChatSession) -> None:
+        if session.evidence_card_id is not None:
+            session.evidence_card_id = None
             self.db.flush()
 
     def get_latest_analysis(self, *, resource_id: int) -> ResearchAnalysis | None:

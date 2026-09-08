@@ -58,7 +58,7 @@ class EvidenceCardDraftService:
                     evidence_card_id=session.evidence_card_id,
                     user_id=current_user_id,
                 )
-                if card is not None:
+                if card is not None and card.research_analysis_id == analysis_id:
                     owned_card = self.repository.get_owned_analysis(
                         analysis_id=card.research_analysis_id,
                         user_id=current_user_id,
@@ -66,8 +66,10 @@ class EvidenceCardDraftService:
                     if owned_card is not None:
                         self.db.commit()
                         return self._response(card, owned_card[1], owned_card[0].project_id)
-                self.db.rollback()
-                raise EvidenceCardNotFoundError("Bound Evidence Card was not found")
+                # The session may still point at a card created for an older
+                # analysis version. Preserve that card, but stop presenting it
+                # as evidence for the latest version.
+                chat_repository.clear_evidence_card(session)
 
         owned = self.repository.get_owned_analysis(
             analysis_id=analysis_id,
@@ -175,23 +177,34 @@ class EvidenceCardDraftService:
         if session is None:
             raise EvidenceCardNotFoundError("Research chat session was not found")
         if session.evidence_card_id is not None:
-            return None
+            bound = self.repository.get_owned_card(
+                evidence_card_id=session.evidence_card_id,
+                user_id=current_user_id,
+            )
+            if bound is not None and bound.research_analysis_id == analysis.id:
+                return None
+            ResearchChatRepository(self.db).clear_evidence_card(session)
         existing = self.repository.get_latest_by_resource_id(
             resource_id=resource.id if resource else None,
             session_id=analysis.session_id,
         )
         if existing is not None:
-            # Reopening a resource in another session reuses its only draft.
-            chat_repository = ResearchChatRepository(self.db)
-            locked_session = chat_repository.get_owned_session(
-                session_id=session_id,
-                user_id=current_user_id,
-                for_update=True,
-            )
-            if locked_session is not None and locked_session.evidence_card_id is None:
-                chat_repository.bind_evidence_card(locked_session, evidence_card=existing)
-                self.db.commit()
-            return None
+            if existing.research_analysis_id == analysis.id:
+                # Reopening the same analysis in another session reuses its draft.
+                chat_repository = ResearchChatRepository(self.db)
+                locked_session = chat_repository.get_owned_session(
+                    session_id=session_id,
+                    user_id=current_user_id,
+                    for_update=True,
+                )
+                if locked_session is not None:
+                    chat_repository.bind_evidence_card(
+                        locked_session, evidence_card=existing
+                    )
+                    self.db.commit()
+                return None
+            # An older analysis card is intentionally retained, but a newly
+            # READY analysis receives a separate DRAFT.
         return self.generate_draft(
             current_user_id=current_user_id,
             analysis_id=analysis_id,

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import logging
 import re
 import shutil
 from dataclasses import dataclass
@@ -13,19 +11,10 @@ from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from app.models.research import ResearchResource
-from app.db.session import SessionLocal
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.research_resource_repository import ResearchResourceRepository
-from app.services.document_parser_service import (
-    DocumentParserService,
-    PDF_MIME_TYPE,
-)
 from app.services.project_service import ProjectNotFoundError
 from app.services.knowledge_base_path_service import KnowledgeBasePathService
-from app.services.chunk_service import ChunkService, ChunkingError
-from app.services.embedding_service import EmbeddingService
-from app.services.bm25_store_service import BM25StoreService
-from app.services.vector_store_service import VectorStoreService
 
 
 ALLOWED_MEDIA_TYPES = {
@@ -34,7 +23,6 @@ ALLOWED_MEDIA_TYPES = {
 }
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
-logger = logging.getLogger(__name__)
 
 
 class InvalidResearchFileError(ValueError):
@@ -55,23 +43,11 @@ class ResearchResourceService:
     def __init__(
         self,
         db: Session,
-        document_parser: DocumentParserService | None = None,
-        chunk_service: ChunkService | None = None,
-        embedding_service: EmbeddingService | None = None,
-        vector_store: VectorStoreService | None = None,
-        bm25_store: BM25StoreService | None = None,
     ) -> None:
         self.db = db
         self.project_repository = ProjectRepository(db)
         self.resource_repository = ResearchResourceRepository(db)
         self.knowledge_base_paths = KnowledgeBasePathService()
-        self.document_parser = document_parser or DocumentParserService()
-        self.chunk_service = chunk_service or ChunkService()
-        self.embedding_service = embedding_service or EmbeddingService()
-        self.vector_store = vector_store or VectorStoreService(
-            self.knowledge_base_paths
-        )
-        self.bm25_store = bm25_store or BM25StoreService(self.knowledge_base_paths)
 
     async def upload(
         self,
@@ -118,10 +94,12 @@ class ResearchResourceService:
                 for_update=True,
             )
             if existing is not None:
+                temporary_path.unlink(missing_ok=True)
+                temporary_created = False
                 self.db.commit()
                 return UploadResearchResourceResult(
                     response=self._resource_response(existing),
-                    parse_resource_id=None,
+                    parse_resource_id=existing.id,
                 )
 
             try:
@@ -151,139 +129,27 @@ class ResearchResourceService:
 
         return UploadResearchResourceResult(
             response=self._resource_response(resource),
-            # Local Markdown/chunk/embedding/indexing is intentionally disabled.
-            # The configured Research Agent owns the knowledge base.
-            parse_resource_id=None,
+            # Text extraction is still explicit; this id marks the resource as
+            # eligible for indexing once extracted_text has been persisted.
+            parse_resource_id=resource.id,
         )
 
-    @staticmethod
-    async def parse_uploaded_pdf_in_background(
-        *, project_id: int, resource_id: int
-    ) -> None:
-        """Run blocking local parsing after the HTTP response has been sent."""
-        await asyncio.to_thread(
-            ResearchResourceService._parse_uploaded_pdf_in_worker,
-            project_id,
-            resource_id,
-        )
-
-    @staticmethod
-    def _parse_uploaded_pdf_in_worker(project_id: int, resource_id: int) -> None:
-        db = SessionLocal()
-        try:
-            service = ResearchResourceService(db)
-            service._parse_pending_pdf(project_id=project_id, resource_id=resource_id)
-        finally:
-            db.close()
-
-    def _parse_pending_pdf(
-        self,
-        *,
-        project_id: int,
-        resource_id: int,
-    ) -> None:
-        """Build a local PDF-derived vector index without involving chat."""
-        resource = self.resource_repository.get_by_id_and_project(
-            resource_id=resource_id,
+    def list_resources(
+        self, *, current_user_id: int, project_id: int
+    ) -> list[dict[str, object]]:
+        project = self.project_repository.get_by_id_and_user(
             project_id=project_id,
+            user_id=current_user_id,
         )
-        if resource is None or resource.media_type != PDF_MIME_TYPE:
-            self.db.rollback()
-            return
-        if resource.index_status != "parsing":
-            self.db.rollback()
-            return
-
-        stage = "parsing"
-        self._log_index_stage(project_id, resource_id, stage)
-        try:
-            raw_path = self.knowledge_base_paths.path_from_storage_key(
-                resource.storage_key
-            )
-            markdown = self.document_parser.parse_pdf_to_markdown(
+        if project is None:
+            raise ProjectNotFoundError("Project was not found for the current user")
+        return [
+            self._resource_list_response(item)
+            for item in self.resource_repository.list_owned_by_project(
                 project_id=project_id,
-                pdf_path=raw_path,
+                user_id=current_user_id,
             )
-            parsed_path = self.knowledge_base_paths.parsed_markdown_file(
-                project_id,
-                raw_path.name,
-            )
-            parsed_storage_key = self.knowledge_base_paths.storage_key(parsed_path)
-            self.resource_repository.mark_index_indexing(
-                resource,
-                parsed_path=parsed_storage_key,
-            )
-            self.db.commit()
-
-            stage = "chunking"
-            self._log_index_stage(project_id, resource_id, stage)
-            chunks = self.chunk_service.chunk_markdown(
-                markdown=markdown,
-                project_id=project_id,
-                file_id=resource.id,
-                filename=resource.original_filename,
-            )
-            if not chunks:
-                raise ChunkingError("Parsed Markdown produced no retrieval chunks")
-
-            stage = "embedding"
-            self._log_index_stage(project_id, resource_id, stage)
-            embeddings = asyncio.run(
-                self.embedding_service.embed_documents(
-                    [chunk.content for chunk in chunks]
-                )
-            )
-            stage = "indexing"
-            self._log_index_stage(project_id, resource_id, stage)
-            self.vector_store.create_or_update_index(
-                project_id=project_id,
-                chunks=chunks,
-                embeddings=embeddings,
-            )
-            stage = "keyword_indexing"
-            self._log_index_stage(project_id, resource_id, stage)
-            self.bm25_store.create_or_update_index(
-                project_id=project_id,
-                chunks=chunks,
-            )
-
-            resource = self.resource_repository.get_by_id_and_project(
-                resource_id=resource_id,
-                project_id=project_id,
-            )
-            if resource is None:
-                self.db.rollback()
-                return
-            self.resource_repository.mark_index_ready(resource)
-            self.db.commit()
-            stage = "ready"
-            self._log_index_stage(project_id, resource_id, stage)
-        except Exception as exc:
-            self.db.rollback()
-            resource = self.resource_repository.get_by_id_and_project(
-                resource_id=resource_id,
-                project_id=project_id,
-            )
-            if resource is None:
-                return
-            self.resource_repository.mark_index_error(resource, parse_error=str(exc))
-            self.db.commit()
-            logger.exception(
-                "Knowledge base indexing failed project_id=%s file_id=%s stage=%s error=%s",
-                project_id,
-                resource_id,
-                stage,
-                str(exc),
-            )
-
-    @staticmethod
-    def _log_index_stage(project_id: int, resource_id: int, stage: str) -> None:
-        logger.info(
-            "Knowledge base indexing project_id=%s file_id=%s stage=%s",
-            project_id,
-            resource_id,
-            stage,
-        )
+        ]
 
     def _persist_temp_file(self, project_id: int, file_name: str, temporary_path: Path) -> Path:
         """Copy the verified temporary upload into a newly-created final path.
@@ -318,6 +184,15 @@ class ResearchResourceService:
             "fileSize": resource.size_bytes,
             "processingStatus": resource.processing_status,
             "indexStatus": resource.index_status,
+        }
+
+    @staticmethod
+    def _resource_list_response(resource: ResearchResource) -> dict[str, object]:
+        return {
+            **ResearchResourceService._resource_response(resource),
+            "errorMessage": resource.error_message or resource.parse_error,
+            "createdAt": resource.created_at,
+            "updatedAt": resource.updated_at,
         }
 
     @staticmethod

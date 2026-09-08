@@ -70,9 +70,31 @@ class ResearchResourceRepository:
 
     def list_ready_by_project(self, *, project_id: int) -> list[ResearchResource]:
         """Return only files whose local retrieval indexes are fully usable."""
-        statement = select(ResearchResource).where(
-            ResearchResource.project_id == project_id,
-            ResearchResource.index_status == "ready",
+        statement = (
+            select(ResearchResource)
+            .join(CourseProject, CourseProject.id == ResearchResource.project_id)
+            .where(
+                ResearchResource.project_id == project_id,
+                ResearchResource.index_status == "ready",
+                ResearchResource.user_id == CourseProject.user_id,
+                CourseProject.is_deleted.is_(False),
+            )
+        )
+        return list(self.db.scalars(statement))
+
+    def list_owned_by_project(
+        self, *, project_id: int, user_id: int
+    ) -> list[ResearchResource]:
+        statement = (
+            select(ResearchResource)
+            .join(CourseProject, CourseProject.id == ResearchResource.project_id)
+            .where(
+                ResearchResource.project_id == project_id,
+                ResearchResource.user_id == user_id,
+                CourseProject.user_id == user_id,
+                CourseProject.is_deleted.is_(False),
+            )
+            .order_by(ResearchResource.created_at.desc(), ResearchResource.id.desc())
         )
         return list(self.db.scalars(statement))
 

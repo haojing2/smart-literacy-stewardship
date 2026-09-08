@@ -1,5 +1,6 @@
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -13,10 +14,12 @@ from app.core.responses import success_response
 from app.db.dependencies import get_db
 from app.models.user import SysUser
 from app.schemas.research import (
+    ResearchResourceResponse,
     ResearchResourceUploadResponse,
     ResearchTextExtractionResponse,
 )
 from app.services.document_parser_service import DocumentParsingError
+from app.services.research_knowledge_index_service import ResearchKnowledgeIndexService
 from app.services.project_service import ProjectNotFoundError
 from app.services.research_resource_service import (
     InvalidResearchFileError,
@@ -75,9 +78,34 @@ async def upload_research_resource(
     return success_response(data)
 
 
+@router.get("")
+def list_research_resources(
+    project_id: int,
+    current_user: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        resources = ResearchResourceService(db).list_resources(
+            current_user_id=current_user.id,
+            project_id=project_id,
+        )
+    except ProjectNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": 40401, "message": "Project was not found"},
+        ) from None
+    return success_response([
+        ResearchResourceResponse.model_validate(item).model_dump(
+            by_alias=True, mode="json"
+        )
+        for item in resources
+    ])
+
+
 @resource_router.post("/{resource_id}/extract-text")
 def extract_research_resource_text(
     resource_id: int,
+    background_tasks: BackgroundTasks,
     current_user: SysUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -105,5 +133,11 @@ def extract_research_resource_text(
     data = ResearchTextExtractionResponse.model_validate(result).model_dump(
         by_alias=True,
         mode="json",
+    )
+    background_tasks.add_task(
+        ResearchKnowledgeIndexService.index_resource_in_background,
+        project_id=result["projectId"],
+        resource_id=resource_id,
+        bind=db.get_bind(),
     )
     return success_response(data)

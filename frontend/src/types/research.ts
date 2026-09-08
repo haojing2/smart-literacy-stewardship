@@ -36,6 +36,8 @@ export interface ResearchResource {
   processingStatus: UploadStatus
   indexStatus?: 'pending' | 'parsing' | 'indexing' | 'ready' | 'error'
   errorMessage?: string | null
+  createdAt?: string
+  updatedAt?: string
 }
 
 export interface ResearchAnalysis {

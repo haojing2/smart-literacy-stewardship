@@ -16,6 +16,7 @@ from app.services.hybrid_retrieval_service import (
 @dataclass(frozen=True)
 class ProjectKnowledgeSource:
     content: str
+    project_id: int
     filename: str
     file_id: int
     chunk_id: str
@@ -74,6 +75,7 @@ class ProjectKnowledgeService:
         return [
             ProjectKnowledgeSource(
                 content=result.content,
+                project_id=project_id,
                 filename=result.filename,
                 file_id=result.file_id,
                 chunk_id=result.chunk_id,

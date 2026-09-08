@@ -9,6 +9,8 @@ import {
   extractResearchText as extractResearchTextApi,
   getEvidenceCard as getEvidenceCardApi,
   getLatestProjectResearchSession as getLatestProjectResearchSessionApi,
+  getLatestResourceResearchSession as getLatestResourceResearchSessionApi,
+  getProjectResearchResources as getProjectResearchResourcesApi,
   sendResearchMessage as sendResearchMessageApi,
   updateEvidenceCard as updateEvidenceCardApi,
   updateResearchAnalysis as updateResearchAnalysisApi,
@@ -199,8 +201,7 @@ export const useResearchStore = defineStore('research', () => {
         return
       }
 
-      const savedResources = localStorage.getItem(resourcesStorageKey(projectId))
-      if (savedResources) resources.value = JSON.parse(savedResources) as ResearchResource[]
+      resources.value = (await getProjectResearchResourcesApi(projectId)).data.data
       let sessionResponse
       try {
         // The database is authoritative. A browser-local session id may have
@@ -214,29 +215,27 @@ export const useResearchStore = defineStore('research', () => {
         }
       }
       const payload = sessionResponse.data.data
-      if (payload.resourceId !== null && !resources.value.some((resource) => resource.resourceId === payload.resourceId)) {
-        resources.value.push({
-          resourceId: payload.resourceId,
-          fileName: '研究资源',
-          mimeType: 'application/pdf',
-          fileSize: 0,
-          processingStatus: 'ANALYZED',
-        })
-      }
       applySnapshot({
         session: backendSession(payload),
         messages: payload.messages.map(backendMessage),
-        analysis: backendAnalysis(payload.latestAnalysis),
-        readiness: payload.readiness,
+        analysis: null,
+        readiness: null,
       })
-      if (payload.evidenceCardId) {
-        evidenceDraft.value = backendEvidence((await getEvidenceCardApi(payload.evidenceCardId)).data.data)
-        const selectedResource = resources.value.find(
-          (resource) => resource.resourceId === payload.resourceId,
-        )
-        if (selectedResource && evidenceDraft.value) {
-          selectedResource.fileName = evidenceDraft.value.sourceDocument
-          selectedResource.processingStatus = 'REVIEWED'
+
+      try {
+        const resourcePayload = (await getLatestResourceResearchSessionApi(projectId)).data.data
+        resourceSession.value = backendSession(resourcePayload)
+        selectedResources.value = resourcePayload.resourceId === null ? [] : [resourcePayload.resourceId]
+        analysis.value = backendAnalysis(resourcePayload.latestAnalysis)
+        if (resourcePayload.readiness) setReadiness(resourcePayload.readiness)
+        if (resourcePayload.evidenceCardId) {
+          evidenceDraft.value = backendEvidence(
+            (await getEvidenceCardApi(resourcePayload.evidenceCardId)).data.data,
+          )
+        }
+      } catch (resourceSessionError) {
+        if (!isAxiosError(resourceSessionError) || resourceSessionError.response?.status !== 404) {
+          throw resourceSessionError
         }
       }
       localStorage.setItem(sessionStorageKey(projectId), String(payload.sessionId))

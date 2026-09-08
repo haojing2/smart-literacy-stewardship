@@ -52,6 +52,7 @@ tests/
 
 # 如果后端测试目录是 backend/tests，也一起忽略
 backend/tests/
+backend/data/knowledge_bases/
 
 # =========================
 # JetBrains / PyCharm / IDEA

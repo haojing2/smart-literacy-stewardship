@@ -90,6 +90,9 @@ export const uploadResearchResource = (projectId: number, file: File) => {
   )
 }
 
+export const getProjectResearchResources = (projectId: number) =>
+  http.get<ApiEnvelope<ResearchResource[]>>(`/projects/${projectId}/research-resources`)
+
 export const extractResearchText = (resourceId: number) =>
   http.post<ApiEnvelope<{ resourceId: number; processingStatus: string; extractedText: string }>>(
     `/research-resources/${resourceId}/extract-text`,
@@ -110,6 +113,16 @@ export const getResearchSession = (sessionId: number) =>
 
 export const getLatestProjectResearchSession = (projectId: number) =>
   http.get<ApiEnvelope<BackendSessionPayload>>(`/projects/${projectId}/research-chat/sessions/latest`)
+
+export const getLatestResourceResearchSession = (projectId: number) =>
+  http.get<ApiEnvelope<BackendSessionPayload>>(
+    `/projects/${projectId}/research-chat/resource-sessions/latest`,
+  )
+
+export const getLatestResearchSessionForResource = (projectId: number, resourceId: number) =>
+  http.get<ApiEnvelope<BackendSessionPayload>>(
+    `/projects/${projectId}/research-resources/${resourceId}/session/latest`,
+  )
 
 export const getResearchMessages = async (sessionId: number) => {
   const response = await getResearchSession(sessionId)

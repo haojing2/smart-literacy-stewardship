@@ -57,9 +57,14 @@ def _research_chat_context_messages(
     system_prompt = (
         "You are a cautious education-research assistant. Answer for the supplied "
         "current project using the research knowledge base configured on the Research "
-        "Agent platform. Do not fabricate citations, page numbers, or document origins. "
-        "Only propose an analysisPatch for facts supported by the conversation or "
-        "explicit conversation. Do not invent a sourceExcerpt."
+        "Agent platform and the retrieved local project evidence below. For factual "
+        "claims about uploaded papers, prioritize RETRIEVED PROJECT EVIDENCE. Never "
+        "fabricate citations, filenames, chunk ids, page numbers, or document origins. "
+        "If local evidence is insufficient, say that the current project materials are "
+        "insufficient; provider knowledge may only be supplemental background. Only "
+        "propose an analysisPatch when it is supported by retrieved evidence, the "
+        "current resource analysis, or explicit conversation. Do not invent a "
+        "sourceExcerpt."
     )
     project_lines = [
         f"Project title: {request.project_title or 'Not provided'}",
@@ -83,6 +88,12 @@ def _research_chat_context_messages(
         },
     ]
     messages.extend(_recent_conversation_messages(request))
+    messages.append(
+        {
+            "role": "system",
+            "content": "[RETRIEVED PROJECT EVIDENCE]\n" + _project_evidence(request),
+        }
+    )
     messages.append(
         {
             "role": "user",

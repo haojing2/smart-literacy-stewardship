@@ -31,6 +31,8 @@ from app.services.research_analysis_state_service import (
 )
 from app.services.evidence_readiness_service import EvidenceReadinessService
 from app.services.evidence_card_draft_service import EvidenceCardDraftService
+from app.services.project_knowledge_service import ProjectKnowledgeService
+from app.core.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -58,14 +60,12 @@ class ResearchChatService:
         self,
         db: Session,
         provider: ResearchAgentProvider,
-        project_knowledge: object | None = None,
+        project_knowledge: ProjectKnowledgeService | None = None,
     ) -> None:
         self.db = db
         self.provider = provider
         self.repository = ResearchChatRepository(db)
-        # Kept only as a source-compatible constructor argument for callers
-        # from the retired local-RAG path. It is deliberately not invoked.
-        _ = project_knowledge
+        self.project_knowledge = project_knowledge or ProjectKnowledgeService(db)
 
     async def create_session(
         self,
@@ -235,6 +235,11 @@ class ResearchChatService:
         )
         analysis_record = self._require_latest_analysis(session.resource_id)
         analysis = self._validated_analysis(analysis_record, source_metadata)
+        self._restore_latest_analysis_card(
+            current_user_id=current_user_id,
+            session=session,
+            analysis_record=analysis_record,
+        )
         return self._session_response(session, analysis, source_metadata)
 
     def get_latest_project_session(
@@ -248,6 +253,54 @@ class ResearchChatService:
         return self.get_session(
             current_user_id=current_user_id, session_id=session.id
         )
+
+    def get_latest_resource_session(
+        self, *, current_user_id: int, project_id: int
+    ) -> ResearchChatSessionResponse:
+        session = self.repository.get_latest_owned_resource_session(
+            project_id=project_id,
+            user_id=current_user_id,
+        )
+        if session is None:
+            raise ResearchChatNotFoundError("Research resource session was not found")
+        return self.get_session(current_user_id=current_user_id, session_id=session.id)
+
+    def get_latest_resource_session_for_resource(
+        self, *, current_user_id: int, project_id: int, resource_id: int
+    ) -> ResearchChatSessionResponse:
+        session = self.repository.get_latest_owned_resource_session_for_resource(
+            project_id=project_id,
+            resource_id=resource_id,
+            user_id=current_user_id,
+        )
+        if session is None:
+            raise ResearchChatNotFoundError("Research resource session was not found")
+        return self.get_session(current_user_id=current_user_id, session_id=session.id)
+
+    def _restore_latest_analysis_card(
+        self,
+        *,
+        current_user_id: int,
+        session: ResearchChatSession,
+        analysis_record: ResearchAnalysis,
+    ) -> None:
+        cards = EvidenceCardDraftService(self.db).repository
+        current = (
+            cards.get_owned_card(
+                evidence_card_id=session.evidence_card_id,
+                user_id=current_user_id,
+            )
+            if session.evidence_card_id is not None
+            else None
+        )
+        if current is not None and current.research_analysis_id == analysis_record.id:
+            return
+        exact = cards.get_by_analysis_id(analysis_id=analysis_record.id)
+        if exact is not None:
+            self.repository.bind_evidence_card(session, evidence_card=exact)
+        else:
+            self.repository.clear_evidence_card(session)
+        self.db.commit()
 
     async def send_message(
         self,
@@ -709,9 +762,22 @@ class ResearchChatService:
             messages=history,
             current_question=content,
         )
-        # The Research Agent is already bound to its knowledge base on the
-        # provider platform. Ordinary chat must not depend on local FAISS/BM25.
-        knowledge_sources = []
+        try:
+            knowledge_sources = await self.project_knowledge.search(
+                project_id=session.project_id,
+                query=content,
+                top_k=settings.knowledge_base_retrieval_top_k,
+            )
+        except Exception:
+            # Retrieval is an evidence enhancement. A missing/corrupt index or
+            # transient embedding failure must not turn ordinary chat into 500.
+            logger.warning(
+                "Project knowledge retrieval degraded project_id=%s session_id=%s",
+                session.project_id,
+                session.id,
+                exc_info=True,
+            )
+            knowledge_sources = []
         request_history = history
         if (
             request_history

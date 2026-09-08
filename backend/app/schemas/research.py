@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -22,9 +24,17 @@ class ResearchResourceUploadResponse(ResearchSchema):
     index_status: str
 
 
+class ResearchResourceResponse(ResearchResourceUploadResponse):
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ResearchTextExtractionResponse(ResearchSchema):
     resource_id: int
+    project_id: int
     processing_status: str
+    index_status: str
     extracted_text: str
 
 

@@ -47,7 +47,7 @@ class ResearchTextExtractionService:
             resource.processing_status == "TEXT_EXTRACTED"
             and resource.extracted_text is not None
         ):
-            return self._result(resource_id, resource.extracted_text)
+            return self._result(resource, resource.extracted_text)
         if resource.processing_status == "TEXT_EXTRACTING":
             raise TextExtractionInProgressError(
                 "Text extraction is already in progress"
@@ -82,7 +82,7 @@ class ResearchTextExtractionService:
         except Exception:
             self.db.rollback()
             raise
-        return self._result(resource_id, extracted_text)
+        return self._result(resource, extracted_text)
 
     def _mark_extracting(self, resource: ResearchResource) -> None:
         try:
@@ -119,9 +119,11 @@ class ResearchTextExtractionService:
         return file_path
 
     @staticmethod
-    def _result(resource_id: int, extracted_text: str) -> dict[str, int | str]:
+    def _result(resource: ResearchResource, extracted_text: str) -> dict[str, int | str]:
         return {
-            "resourceId": resource_id,
+            "resourceId": resource.id,
+            "projectId": resource.project_id,
             "processingStatus": "TEXT_EXTRACTED",
+            "indexStatus": resource.index_status,
             "extractedText": extracted_text,
         }

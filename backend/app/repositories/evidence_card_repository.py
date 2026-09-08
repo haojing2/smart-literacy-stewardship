@@ -120,6 +120,8 @@ class EvidenceCardRepository:
             source_metadata_json=source_metadata,
             card_status="DRAFT",
             research_analysis_id=analysis.id,
+            project_id=analysis.project_id,
+            source_file_id=resource.id if resource else None,
             confirmed_by=None,
             confirmed_at=None,
         )

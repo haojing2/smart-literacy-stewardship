@@ -4,6 +4,9 @@ import { createPinia, setActivePinia } from 'pinia'
 const mocks = vi.hoisted(() => ({
   getProject: vi.fn(),
   getLatestProjectResearchSession: vi.fn(),
+  getLatestResourceResearchSession: vi.fn(),
+  getProjectResearchResources: vi.fn(),
+  getEvidenceCard: vi.fn(),
   createResearchSession: vi.fn(),
 }))
 
@@ -11,10 +14,12 @@ vi.mock('@/api/projects', () => ({ getProject: mocks.getProject }))
 vi.mock('@/api/research', () => ({
   createResearchSession: mocks.createResearchSession,
   getLatestProjectResearchSession: mocks.getLatestProjectResearchSession,
+  getLatestResourceResearchSession: mocks.getLatestResourceResearchSession,
+  getProjectResearchResources: mocks.getProjectResearchResources,
   confirmEvidenceCard: vi.fn(),
   confirmResearchAnalysis: vi.fn(),
   extractResearchText: vi.fn(),
-  getEvidenceCard: vi.fn(),
+  getEvidenceCard: mocks.getEvidenceCard,
   sendResearchMessage: vi.fn(),
   updateEvidenceCard: vi.fn(),
   updateResearchAnalysis: vi.fn(),
@@ -49,6 +54,11 @@ describe('research store message preconditions', () => {
     vi.clearAllMocks()
     localStorage.clear()
     mocks.getProject.mockResolvedValue({ data: { data: project } })
+    mocks.getProjectResearchResources.mockResolvedValue({ data: { data: [] } })
+    mocks.getLatestResourceResearchSession.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 404 },
+    })
   })
 
   it('creates a project knowledge-base session when a new project has none', async () => {
@@ -90,6 +100,84 @@ describe('research store message preconditions', () => {
     expect(mocks.createResearchSession).not.toHaveBeenCalled()
     expect(store.currentSession?.sessionId).toBe(71)
     expect(store.messages.map((message) => message.content)).toEqual(['你好'])
+  })
+
+  it('restores resources and the latest resource analysis from backend without localStorage', async () => {
+    localStorage.clear()
+    mocks.getProjectResearchResources.mockResolvedValue({
+      data: {
+        data: [{
+          resourceId: 91,
+          fileName: 'study.pdf',
+          mimeType: 'application/pdf',
+          fileSize: 1024,
+          processingStatus: 'TEXT_EXTRACTED',
+          indexStatus: 'ready',
+        }],
+      },
+    })
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    mocks.getLatestResourceResearchSession.mockResolvedValue({
+      data: {
+        data: {
+          ...projectSession,
+          sessionId: 92,
+          resourceId: 91,
+          latestAnalysis: {
+            researchSubjects: ['五年级学生'],
+            researchTopics: ['协作学习'],
+            aiLiteracyDimensions: [],
+            teachingStrategies: [],
+            interventionDuration: null,
+            assessmentTools: [],
+            mainFindings: [],
+            limitations: [],
+          },
+        },
+      },
+    })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+
+    expect(store.resources.map((item) => item.fileName)).toEqual(['study.pdf'])
+    expect(store.currentSession?.sessionId).toBe(71)
+    expect(store.resourceSession?.sessionId).toBe(92)
+    expect(store.analysis?.participants).toEqual(['五年级学生'])
+  })
+
+  it('restores the resource session evidence card from the database', async () => {
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    mocks.getLatestResourceResearchSession.mockResolvedValue({
+      data: { data: { ...projectSession, sessionId: 92, resourceId: 91, evidenceCardId: 301 } },
+    })
+    mocks.getEvidenceCard.mockResolvedValue({
+      data: {
+        data: {
+          evidenceCardId: 301,
+          researchAnalysisId: 201,
+          researchFinding: '研究发现',
+          applicableAudience: '五年级学生',
+          recommendedStrategies: [],
+          implementationConditions: [],
+          teachingImplications: '',
+          limitations: '',
+          source: {
+            resourceId: 91,
+            projectId: 12,
+            originalFilename: 'study.pdf',
+            sha256: 'abc',
+          },
+          cardStatus: 'DRAFT',
+        },
+      },
+    })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+
+    expect(store.evidenceDraft?.evidenceCardId).toBe(301)
+    expect(store.evidenceDraft?.sourceDocument).toBe('study.pdf')
   })
 
   it('returns false with an explicit recovery error only when session initialization failed', async () => {

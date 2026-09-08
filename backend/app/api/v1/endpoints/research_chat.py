@@ -149,6 +149,50 @@ def get_latest_project_research_chat_session(
     )
 
 
+@router.get("/api/v1/projects/{project_id}/research-chat/resource-sessions/latest")
+def get_latest_resource_research_chat_session(
+    project_id: int,
+    current_user: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    provider: ResearchAgentProvider = Depends(get_research_agent_provider),
+):
+    try:
+        result = ResearchChatService(db, provider).get_latest_resource_session(
+            current_user_id=current_user.id,
+            project_id=project_id,
+        )
+    except ResearchChatNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": 40404, "message": "Research resource session was not found"},
+        ) from None
+    return success_response(result.model_dump(by_alias=True, mode="json"))
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/research-resources/{resource_id}/session/latest"
+)
+def get_latest_research_chat_session_for_resource(
+    project_id: int,
+    resource_id: int,
+    current_user: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    provider: ResearchAgentProvider = Depends(get_research_agent_provider),
+):
+    try:
+        result = ResearchChatService(db, provider).get_latest_resource_session_for_resource(
+            current_user_id=current_user.id,
+            project_id=project_id,
+            resource_id=resource_id,
+        )
+    except ResearchChatNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": 40404, "message": "Research resource session was not found"},
+        ) from None
+    return success_response(result.model_dump(by_alias=True, mode="json"))
+
+
 @router.post("/api/v1/research-chat/sessions/{session_id}/messages")
 async def send_research_chat_message(
     session_id: int,
