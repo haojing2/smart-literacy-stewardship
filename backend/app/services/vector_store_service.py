@@ -36,6 +36,11 @@ class ProjectVectorIndex:
     ) -> list[VectorSearchResult]:
         if not isinstance(top_k, int) or top_k <= 0:
             raise VectorStoreError("top_k must be a positive integer")
+        if len(query_embedding) != int(self.index.d):
+            raise VectorStoreError(
+                "Embedding dimension changed. "
+                "Please rebuild the project knowledge index."
+            )
         vector = _normalize_vectors([query_embedding])
         scores, ids = self.index.search(vector, min(top_k, len(self.chunks)))
         results: list[VectorSearchResult] = []
@@ -84,6 +89,11 @@ class VectorStoreService:
             loaded = None
 
         if loaded is not None:
+            if int(loaded.index.d) != int(incoming_vectors.shape[1]):
+                raise VectorStoreError(
+                    "Embedding dimension changed. "
+                    "Please rebuild the project knowledge index."
+                )
             existing_vectors = _reconstruct_vectors(loaded.index, len(loaded.chunks))
             merged: dict[str, tuple[MarkdownChunk, Any]] = {
                 chunk.chunk_id: (chunk, existing_vectors[index])

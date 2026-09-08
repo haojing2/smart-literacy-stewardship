@@ -34,7 +34,14 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "text-embedding-3-small"
-    embedding_timeout_seconds: float = 30.0
+    embedding_timeout_seconds: float = 60.0
+    xfyun_embedding_app_id: str | None = None
+    xfyun_embedding_api_key: str | None = None
+    xfyun_embedding_api_secret: str | None = None
+    xfyun_embedding_url: str = "https://emb-cn-huabei-1.xf-yun.com/"
+    xfyun_embedding_dimension: int = 2560
+    xfyun_embedding_max_concurrency: int = 4
+    xfyun_embedding_uid: str | None = None
 
     llm_provider: str = "mock"
     spark_api_key: str | None = None
