@@ -1,0 +1,205 @@
+"""Spark-backed implementation of the existing assistant provider contract."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import AsyncIterator
+from typing import Any, Callable, TypeVar
+
+from pydantic import BaseModel, ValidationError
+
+from app.assistants.base import ResearchAssistantProvider
+from app.assistants.spark_client import SparkContractError, SparkLLMClient, SparkResponseParseError
+from app.assistants.prompts.course_assessment import build_course_assessment_messages
+from app.assistants.prompts.course_blueprint import build_course_activity_regeneration_messages, build_course_blueprint_messages
+from app.assistants.prompts.course_context import build_course_context_messages
+from app.assistants.prompts.course_objective import build_course_objective_messages
+from app.assistants.prompts.course_pedagogy import build_course_pedagogy_messages
+from app.assistants.prompts.course_quality import build_course_quality_messages
+from app.assistants.prompts.research import build_evidence_card_messages, build_research_analysis_messages, build_research_chat_messages, build_research_chat_stream_messages
+from app.schemas.course_design import (
+    CourseActivityProposal, CourseActivityRegenerationRequest, CourseAssessmentGenerationRequest,
+    CourseAssessmentGenerationResult, CourseBlueprintGenerationRequest, CourseBlueprintGenerationResult,
+    CourseContextDiagnosis, CourseContextDiagnosisRequest, CourseObjectiveGenerationRequest,
+    CourseObjectiveGenerationResult, CoursePedagogyRecommendationRequest, CoursePedagogyRecommendationResult,
+    CourseQualityCheckRequest, CourseQualityCheckResult,
+)
+from app.schemas.research_assistant import (
+    EvidenceCardDraftResult, EvidenceCardGenerationRequest, EvidenceCardGenerationResponse,
+    ResearchAnalysisRequest, ResearchAnalysisResponse, ResearchAnalysisResult, ResearchChatRequest,
+    ResearchChatResponse, ResearchChatResult,
+)
+from app.schemas.resource_creation import (
+    ResourceBlockTransformProviderRequest, ResourceBlockTransformResult, ResourceRevisionProposalRequest,
+    ResourceRevisionProposalResult, ResourceSettingsRecommendationRequest, ResourceSettingsRecommendationResult,
+    TeachingResourceGenerationRequest, TeachingResourceGenerationResult, TeachingResourceReviewRequest,
+    TeachingResourceReviewResult,
+)
+
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class SparkResearchAssistant(ResearchAssistantProvider):
+    """Provider-only adapter: prompts and validates, but never persists data."""
+
+    def __init__(self, client: SparkLLMClient | None = None) -> None:
+        self._client = client or SparkLLMClient()
+
+    @property
+    def provider_name(self) -> str:
+        return "spark"
+
+    async def analyze_research(self, request: ResearchAnalysisRequest) -> ResearchAnalysisResponse:
+        result = await self._from_messages(build_research_analysis_messages(request), ResearchAnalysisResult)
+        # Evidence readiness is a deterministic service concern, never an LLM decision.
+        result = result.model_copy(update={"evidence_ready": False})
+        if result.source_excerpt and result.source_excerpt not in request.extracted_text:
+            raise SparkContractError("Spark sourceExcerpt must be copied from extracted_text")
+        return ResearchAnalysisResponse(provider=self.provider_name, request_fingerprint=self._fingerprint(request), data=result)
+
+    async def chat(self, request: ResearchChatRequest) -> ResearchChatResponse:
+        result = await self._from_messages(build_research_chat_messages(request), ResearchChatResult)
+        return ResearchChatResponse(provider=self.provider_name, request_fingerprint=self._fingerprint(request), data=result)
+
+    async def stream_chat(self, request: ResearchChatRequest) -> AsyncIterator[str]:
+        async for content in self._client.stream_chat(
+            build_research_chat_stream_messages(request)
+        ):
+            yield content
+
+    async def generate_evidence_card(self, request: EvidenceCardGenerationRequest) -> EvidenceCardGenerationResponse:
+        result = await self._from_messages(build_evidence_card_messages(request), EvidenceCardDraftResult)
+        if result.source_document != request.source_file_name:
+            raise SparkContractError("Spark evidence card sourceDocument must equal source_file_name")
+        return EvidenceCardGenerationResponse(provider=self.provider_name, request_fingerprint=self._fingerprint(request), data=result)
+
+    async def diagnose_course_context(self, request: CourseContextDiagnosisRequest) -> CourseContextDiagnosis:
+        return await self._from_messages(build_course_context_messages(request), CourseContextDiagnosis)
+
+    async def generate_course_objectives(self, request: CourseObjectiveGenerationRequest) -> CourseObjectiveGenerationResult:
+        standard_ids = self._ids(request.curriculum_standards)
+        literacy_ids = self._ids(request.ai_literacy_items)
+        return await self._from_messages(
+            build_course_objective_messages(request), CourseObjectiveGenerationResult,
+            lambda result: [
+                (self._require_subset(item.standard_refs, standard_ids, "standardRefs"), self._require_subset(item.literacy_refs, literacy_ids, "literacyRefs"))
+                for item in result.objectives
+            ],
+        )
+
+    async def recommend_course_pedagogy(self, request: CoursePedagogyRecommendationRequest) -> CoursePedagogyRecommendationResult:
+        method_ids = self._ids(request.methods)
+        return await self._from_messages(
+            build_course_pedagogy_messages(request), CoursePedagogyRecommendationResult,
+            lambda result: [self._require_subset([item.method_id], method_ids, "pedagogy methodId") for item in [result.recommended, *result.alternatives]],
+        )
+
+    async def generate_course_assessments(self, request: CourseAssessmentGenerationRequest) -> CourseAssessmentGenerationResult:
+        objective_ids = self._ids(request.objectives)
+        return await self._from_messages(
+            build_course_assessment_messages(request), CourseAssessmentGenerationResult,
+            lambda result: [self._require_subset([item.objective_id], objective_ids, "objectiveId") for item in result.assessments],
+        )
+
+    async def generate_course_blueprint(self, request: CourseBlueprintGenerationRequest) -> CourseBlueprintGenerationResult:
+        objective_ids = self._ids(request.objectives)
+        return await self._from_messages(
+            build_course_blueprint_messages(request), CourseBlueprintGenerationResult,
+            lambda result: [self._require_subset(item.objective_refs, objective_ids, "objectiveRefs") for item in result.activities],
+        )
+
+    async def regenerate_course_activity(self, request: CourseActivityRegenerationRequest) -> CourseActivityProposal:
+        return await self._from_messages(
+            build_course_activity_regeneration_messages(request), CourseActivityProposal,
+            lambda result: self._require_subset(result.objective_refs, self._ids(request.blueprint.objectives), "objectiveRefs"),
+        )
+
+    async def check_course_quality(self, request: CourseQualityCheckRequest) -> CourseQualityCheckResult:
+        return await self._from_messages(build_course_quality_messages(request), CourseQualityCheckResult)
+
+    async def generate_teaching_resource(self, request: TeachingResourceGenerationRequest) -> TeachingResourceGenerationResult:
+        return await self._structured("teaching resource generation", request, TeachingResourceGenerationResult)
+
+    async def recommend_resource_settings(self, request: ResourceSettingsRecommendationRequest) -> ResourceSettingsRecommendationResult:
+        return await self._structured("resource settings recommendation", request, ResourceSettingsRecommendationResult)
+
+    async def transform_resource_block(self, request: ResourceBlockTransformProviderRequest) -> ResourceBlockTransformResult:
+        return await self._structured("resource block transform", request, ResourceBlockTransformResult)
+
+    async def review_teaching_resource(self, request: TeachingResourceReviewRequest) -> TeachingResourceReviewResult:
+        return await self._structured("teaching resource review", request, TeachingResourceReviewResult)
+
+    async def propose_resource_revision(self, request: ResourceRevisionProposalRequest) -> ResourceRevisionProposalResult:
+        return await self._structured("resource revision proposal", request, ResourceRevisionProposalResult)
+
+    async def _structured(self, task: str, request: BaseModel, result_type: type[ModelT]) -> ModelT:
+        prompt = {
+            "task": task,
+            "rules": [
+                "Return JSON only; no markdown and no explanation.",
+                "Use camelCase keys exactly matching the supplied JSON schema.",
+                "Do not invent evidence or database IDs.",
+                "Return null only when resultSchema explicitly allows null; required fields and array minimums must satisfy resultSchema.",
+                "For pedagogical interpretation tasks, reason only from the supplied teaching context.",
+            ],
+            "request": request.model_dump(mode="json", by_alias=True),
+            "resultSchema": result_type.model_json_schema(by_alias=True),
+        }
+        return await self._from_messages([
+            {"role": "system", "content": "You are a cautious education-research assistant. Follow the JSON contract exactly."},
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ], result_type)
+
+    async def _from_messages(
+        self, messages: list[dict[str, str]], result_type: type[ModelT],
+        contract_validator: Callable[[ModelT], object] | None = None,
+    ) -> ModelT:
+        try:
+            payload = await self._client.chat_json(messages, repair=False)
+        except SparkResponseParseError:
+            return await self._repair_and_validate(messages, result_type, contract_validator)
+        return await self._validate_or_repair(messages, payload, result_type, contract_validator)
+
+    async def _validate_or_repair(
+        self, messages: list[dict[str, str]], payload: dict[str, Any], result_type: type[ModelT],
+        contract_validator: Callable[[ModelT], object] | None,
+    ) -> ModelT:
+        try:
+            result = result_type.model_validate(payload, extra="forbid")
+            if contract_validator is not None:
+                contract_validator(result)
+            return result
+        except (ValidationError, SparkContractError):
+            return await self._repair_and_validate(messages, result_type, contract_validator)
+
+    async def _repair_and_validate(
+        self, messages: list[dict[str, str]], result_type: type[ModelT],
+        contract_validator: Callable[[ModelT], object] | None,
+    ) -> ModelT:
+        repaired = await self._client.chat_json([
+            *messages,
+            {"role": "user", "content": "The previous output violates the JSON contract. Repair it once and return only one JSON object satisfying every required field, type, database-ID constraint, and minimum array length."},
+        ], repair=False)
+        try:
+            result = result_type.model_validate(repaired, extra="forbid")
+            if contract_validator is not None:
+                contract_validator(result)
+            return result
+        except (ValidationError, SparkContractError) as exc:
+            raise SparkContractError("Spark JSON violates the required result contract") from exc
+
+    @staticmethod
+    def _fingerprint(request: BaseModel) -> str:
+        encoded = json.dumps(request.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _ids(items: list[dict[str, object]]) -> set[int]:
+        return {item["id"] for item in items if isinstance(item.get("id"), int)}  # type: ignore[misc]
+
+    @staticmethod
+    def _require_subset(values: list[int], allowed: set[int], label: str) -> None:
+        if not set(values).issubset(allowed):
+            raise SparkContractError(f"Spark returned an unknown {label}")

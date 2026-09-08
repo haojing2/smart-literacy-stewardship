@@ -1,0 +1,74 @@
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = BACKEND_ROOT / ".env"
+
+
+class Settings(BaseSettings):
+    app_name: str = "Smart Literacy Stewardship"
+    app_version: str = "2.0.0"
+    debug: bool = True
+
+    mysql_host: str
+    mysql_port: int = 3306
+    mysql_user: str
+    mysql_password: str
+    mysql_database: str
+
+    jwt_secret_key: str
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60 * 24 * 2
+    research_storage_root: Path = (
+        Path(__file__).resolve().parents[2] / "storage" / "research"
+    )
+    knowledge_base_root: Path = BACKEND_ROOT / "data" / "knowledge_bases"
+    knowledge_base_chunk_size: int = 1000
+    knowledge_base_chunk_overlap: int = 120
+    knowledge_base_retrieval_candidate_k: int = 10
+    knowledge_base_retrieval_top_k: int = 5
+    knowledge_base_rrf_k: int = 60
+    embedding_provider: str = "openai_compatible"
+    embedding_api_key: str | None = None
+    embedding_base_url: str | None = None
+    embedding_model: str = "text-embedding-3-small"
+    embedding_timeout_seconds: float = 30.0
+
+    llm_provider: str = "mock"
+    spark_api_key: str | None = None
+    spark_api_base: str = "https://spark-api-open.xf-yun.com/v2"
+    spark_model_id: str = "spark-x"
+    spark_user_id: str = "123456"
+    spark_timeout_seconds: float = 120.0
+
+    # Assistant credentials deliberately do not reuse the OpenAI-compatible
+    # Spark configuration above: course design must remain on that provider.
+    research_agent_provider: str | None = None
+    spark_assistant_app_id: str | None = None
+    spark_assistant_api_key: str | None = None
+    spark_assistant_api_secret: str | None = None
+    research_agent_url: str | None = None
+    research_agent_domain: str = "generalv3.5"
+    research_agent_timeout_seconds: float = 120.0
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @property
+    def database_url(self):
+        return (
+            f"mysql+pymysql://{self.mysql_user}:"
+            f"{self.mysql_password}@"
+            f"{self.mysql_host}:"
+            f"{self.mysql_port}/"
+            f"{self.mysql_database}"
+            "?charset=utf8mb4"
+        )
+
+
+settings = Settings()
