@@ -6,3 +6,129 @@
 .idea/
 .test-venv/
 tests/
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+.env.test.example
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# Python test / coverage cache
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.test-venv/
+
+# =========================
+# Tests
+# =========================
+tests/
+
+# 如果后端测试目录是 backend/tests，也一起忽略
+backend/tests/
+
+# =========================
+# JetBrains / PyCharm / IDEA
+# =========================
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+
+# =========================
+# Node / Vue
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Frontend build
+dist/
+.vite/
+.cache/
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# Runtime / temporary files
+# =========================
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*.pid
+
+# =========================
+# Database / local data
+# =========================
+*.sqlite
+*.sqlite3
+*.db
+
+# 如果项目有本地上传文件或临时解析目录，可按实际路径打开
+# uploads/
+# temp/
+# tmp/
+
+# =========================
+# OS generated files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Python type / lint cache
+# =========================
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.pytype/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Misc
+# =========================
+*.orig
