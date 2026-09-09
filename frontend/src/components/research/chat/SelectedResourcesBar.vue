@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import type { ResearchResource } from '@/types/research'
 
-defineProps<{ resources: ResearchResource[] }>()
+withDefaults(defineProps<{ resources: ResearchResource[]; scopeLabel?: string }>(), {
+  scopeLabel: '项目知识库',
+})
 defineEmits<{ remove: [resourceId: number]; upload: [] }>()
 </script>
 
 <template>
   <div class="resources-bar">
     <div class="bar-heading">
-      <span>当前研究依据</span>
+      <span>{{ scopeLabel }}</span>
       <el-button link type="primary" @click="$emit('upload')">上传研究资源</el-button>
     </div>
     <div v-if="resources.length" class="resource-chips">
@@ -17,7 +19,7 @@ defineEmits<{ remove: [resourceId: number]; upload: [] }>()
         <button type="button" aria-label="移除研究依据" @click="$emit('remove', resource.resourceId)">×</button>
       </span>
     </div>
-    <span v-else class="empty-resources">尚未添加研究资源</span>
+    <span v-else class="empty-resources">当前将检索项目中全部已就绪研究资源</span>
   </div>
 </template>
 

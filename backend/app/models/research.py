@@ -76,6 +76,10 @@ class ResearchAnalysis(Base):
         Index("idx_research_analysis_session_status", "session_id", "status"),
         CheckConstraint("version > 0", name="ck_research_analysis_version_positive"),
         CheckConstraint("status IN ('DRAFT', 'VALIDATED')", name="ck_research_analysis_status"),
+        CheckConstraint(
+            "generation_status IN ('PENDING', 'READY', 'FAILED')",
+            name="ck_research_analysis_generation_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
@@ -107,6 +111,9 @@ class ResearchAnalysis(Base):
         DateTime, nullable=True
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT", server_default="DRAFT")
+    generation_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="READY", server_default="READY"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 

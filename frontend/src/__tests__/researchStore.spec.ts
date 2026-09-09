@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   getProjectResearchResources: vi.fn(),
   getEvidenceCard: vi.fn(),
   createResearchSession: vi.fn(),
+  sendResearchMessage: vi.fn(),
+  uploadResearchResource: vi.fn(),
+  extractResearchText: vi.fn(),
 }))
 
 vi.mock('@/api/projects', () => ({ getProject: mocks.getProject }))
@@ -18,12 +21,12 @@ vi.mock('@/api/research', () => ({
   getProjectResearchResources: mocks.getProjectResearchResources,
   confirmEvidenceCard: vi.fn(),
   confirmResearchAnalysis: vi.fn(),
-  extractResearchText: vi.fn(),
+  extractResearchText: mocks.extractResearchText,
   getEvidenceCard: mocks.getEvidenceCard,
-  sendResearchMessage: vi.fn(),
+  sendResearchMessage: mocks.sendResearchMessage,
   updateEvidenceCard: vi.fn(),
   updateResearchAnalysis: vi.fn(),
-  uploadResearchResource: vi.fn(),
+  uploadResearchResource: mocks.uploadResearchResource,
 }))
 import { useResearchStore } from '@/stores/research'
 
@@ -143,10 +146,10 @@ describe('research store message preconditions', () => {
     expect(store.resources.map((item) => item.fileName)).toEqual(['study.pdf'])
     expect(store.currentSession?.sessionId).toBe(71)
     expect(store.resourceSession?.sessionId).toBe(92)
-    expect(store.analysis?.participants).toEqual(['五年级学生'])
+    expect(store.analysis).toBeNull()
   })
 
-  it('restores the resource session evidence card from the database', async () => {
+  it('preloads resource evidence without replacing the active project workspace', async () => {
     mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
     mocks.getLatestResourceResearchSession.mockResolvedValue({
       data: { data: { ...projectSession, sessionId: 92, resourceId: 91, evidenceCardId: 301 } },
@@ -176,8 +179,90 @@ describe('research store message preconditions', () => {
     const store = useResearchStore()
     await store.initialize(12)
 
-    expect(store.evidenceDraft?.evidenceCardId).toBe(301)
-    expect(store.evidenceDraft?.sourceDocument).toBe('study.pdf')
+    expect(mocks.getEvidenceCard).toHaveBeenCalledWith(301)
+    expect(store.evidenceDraft).toBeNull()
+    expect(store.activeSession?.sessionId).toBe(71)
+  })
+
+  it('keeps historical project messages active when a resource session is also restored', async () => {
+    mocks.getProjectResearchResources.mockResolvedValue({ data: { data: [{
+      resourceId: 91, fileName: 'study.pdf', mimeType: 'application/pdf', fileSize: 1024,
+      processingStatus: 'TEXT_EXTRACTED', indexStatus: 'ready',
+    }] } })
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: {
+      ...projectSession,
+      messages: [{ messageId: 1, role: 'ASSISTANT', sequenceNo: 1, content: 'project history', createdAt: '2026-09-07T00:00:00Z' }],
+    } } })
+    mocks.getLatestResourceResearchSession.mockResolvedValue({ data: { data: {
+      ...projectSession, sessionId: 92, resourceId: 91,
+      messages: [{ messageId: 2, role: 'ASSISTANT', sequenceNo: 1, content: 'resource history', createdAt: '2026-09-07T00:00:00Z' }],
+    } } })
+    mocks.sendResearchMessage.mockResolvedValue({ data: { data: {
+      userMessage: { messageId: 3, role: 'USER', sequenceNo: 2, content: 'question', createdAt: '2026-09-07T00:00:01Z' },
+      assistantMessage: { messageId: 4, role: 'ASSISTANT', sequenceNo: 3, content: 'answer', createdAt: '2026-09-07T00:00:02Z' },
+      latestAnalysis: null, readiness: null,
+    } } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+    expect(store.activeSession?.sessionId).toBe(71)
+    expect(store.resourceSession?.sessionId).toBe(92)
+    expect(store.selectedResources).toEqual([])
+    expect(store.messages.map((message) => message.content)).toEqual(['project history'])
+
+    await store.sendMessage('question')
+    expect(mocks.sendResearchMessage).toHaveBeenCalledWith(71, 'question')
+  })
+
+  it('checks that the uploaded resource index is ready before creating its session', async () => {
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    const uploaded = {
+      resourceId: 93, fileName: 'new.pdf', mimeType: 'application/pdf', fileSize: 10,
+      processingStatus: 'UPLOADED', indexStatus: 'pending',
+    }
+    const ready = { ...uploaded, processingStatus: 'TEXT_EXTRACTED', indexStatus: 'ready' }
+    mocks.uploadResearchResource.mockResolvedValue({ data: { data: uploaded } })
+    mocks.extractResearchText.mockResolvedValue({ data: { data: {
+      resourceId: 93, processingStatus: 'TEXT_EXTRACTED', indexStatus: 'pending', extractedText: 'text',
+    } } })
+    mocks.getProjectResearchResources
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: { data: [ready] } })
+    mocks.createResearchSession.mockResolvedValue({ data: { data: {
+      ...projectSession, sessionId: 94, resourceId: 93, messages: [],
+    } } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+    await store.uploadAndProcess(new File(['pdf'], 'new.pdf', { type: 'application/pdf' }))
+
+    expect(mocks.getProjectResearchResources).toHaveBeenCalledTimes(2)
+    expect(mocks.createResearchSession).toHaveBeenLastCalledWith(12, 93)
+    expect(store.activeSession?.sessionId).toBe(94)
+  })
+
+  it('stops before session creation when the uploaded resource index fails', async () => {
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    const uploaded = {
+      resourceId: 95, fileName: 'bad.pdf', mimeType: 'application/pdf', fileSize: 10,
+      processingStatus: 'UPLOADED', indexStatus: 'pending',
+    }
+    mocks.uploadResearchResource.mockResolvedValue({ data: { data: uploaded } })
+    mocks.extractResearchText.mockResolvedValue({ data: { data: {
+      resourceId: 95, processingStatus: 'TEXT_EXTRACTED', indexStatus: 'pending', extractedText: 'text',
+    } } })
+    mocks.getProjectResearchResources
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: { data: [{ ...uploaded, indexStatus: 'error' }] } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+    mocks.createResearchSession.mockClear()
+    await store.uploadAndProcess(new File(['pdf'], 'bad.pdf', { type: 'application/pdf' }))
+
+    expect(mocks.createResearchSession).not.toHaveBeenCalled()
+    expect(store.uploadStatus).toBe('FAILED')
+    expect(store.error).toContain('索引')
   })
 
   it('returns false with an explicit recovery error only when session initialization failed', async () => {

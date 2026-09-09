@@ -8,13 +8,17 @@ import pytest
 from app.agents.research.errors import ResearchAgentContractError
 from app.agents.research.spark_research_agent import SparkResearchAgent
 from app.core.config import settings
-from app.schemas.research_assistant import ResearchAnalysisRequest
+from app.schemas.research_assistant import ResearchAnalysisRequest, ResearchAnalysisResult
 from app.services.bm25_store_service import BM25StoreService
 from app.services.chunk_service import MarkdownChunk
 from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.knowledge_base_path_service import KnowledgeBasePathService
 from app.services.project_knowledge_service import ProjectKnowledgeService, ProjectKnowledgeSource
-from app.services.research_chat_service import ResearchChatService
+from app.services.research_chat_service import (
+    ResearchChatService,
+    ResearchKnowledgeIndexNotReadyError,
+    ResearchRetrievalScopeError,
+)
 from app.services.vector_store_service import VectorStoreService
 
 
@@ -60,9 +64,18 @@ class FailingProvider:
         raise ResearchAgentContractError("invalid contract")
 
 
+class SuccessfulProvider:
+    async def analyze_research(self, request):
+        return SimpleNamespace(
+            provider="test",
+            data=ResearchAnalysisResult(research_topics=["topic"]),
+        )
+
+
 class SessionRepository:
     def __init__(self) -> None:
         self.analysis_data = None
+        self.analysis_generation_status = None
 
     def get_owned_project(self, **kwargs):
         return SimpleNamespace(id=1020, title="Project", topic="Topic")
@@ -79,6 +92,7 @@ class SessionRepository:
 
     def create_analysis(self, **kwargs):
         self.analysis_data = kwargs["structured_data"]
+        self.analysis_generation_status = kwargs.get("generation_status")
         return SimpleNamespace(id=41)
 
     def create_session(self, **kwargs):
@@ -110,7 +124,176 @@ def test_structured_analysis_failure_still_creates_incomplete_session() -> None:
     assert response.session_id == 51
     assert repository.analysis_data["evidence_ready"] is False
     assert repository.analysis_data["research_subjects"] == []
+    assert repository.analysis_generation_status == "FAILED"
     assert db.commits == 1
+
+
+def test_successful_structured_analysis_is_saved_ready(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.research_chat_service.EvidenceCardDraftService.generate_draft_if_ready_transition",
+        lambda *args, **kwargs: None,
+    )
+    db = StubDb()
+    repository = SessionRepository()
+    service = ResearchChatService(db, SuccessfulProvider(), OneSourceKnowledge())  # type: ignore[arg-type]
+    service.repository = repository  # type: ignore[assignment]
+    service.get_session = lambda **kwargs: SimpleNamespace(session_id=51)  # type: ignore[method-assign]
+    asyncio.run(service.create_session(
+        current_user_id=1, project_id=1020,
+        request=SimpleNamespace(resource_id=16, title=None),
+    ))
+    assert repository.analysis_generation_status == "READY"
+    assert repository.analysis_data["research_topics"] == ["topic"]
+
+
+def test_failed_analysis_retry_does_not_create_another_failed_version() -> None:
+    existing = SimpleNamespace(id=40, version=1, generation_status="FAILED")
+
+    class RetryRepository(SessionRepository):
+        def __init__(self):
+            super().__init__()
+            self.marked_failed = 0
+
+        def get_latest_analysis(self, **kwargs):
+            return existing
+
+        def mark_analysis_generation_failed(self, analysis, **kwargs):
+            self.marked_failed += 1
+
+    repository = RetryRepository()
+    service = ResearchChatService(StubDb(), FailingProvider(), OneSourceKnowledge())  # type: ignore[arg-type]
+    service.repository = repository  # type: ignore[assignment]
+    service.get_session = lambda **kwargs: SimpleNamespace(session_id=51)  # type: ignore[method-assign]
+    asyncio.run(service.create_session(
+        current_user_id=1, project_id=1020,
+        request=SimpleNamespace(resource_id=16, title=None),
+    ))
+    assert repository.marked_failed == 1
+    assert repository.analysis_data is None
+
+
+def test_failed_analysis_retry_success_creates_next_ready_version(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.research_chat_service.EvidenceCardDraftService.generate_draft_if_ready_transition",
+        lambda *args, **kwargs: None,
+    )
+    existing = SimpleNamespace(id=40, version=1, generation_status="FAILED")
+
+    class RetryRepository(SessionRepository):
+        def __init__(self):
+            super().__init__()
+            self.analysis_version = None
+
+        def get_latest_analysis(self, **kwargs):
+            return existing
+
+        def create_analysis(self, **kwargs):
+            self.analysis_version = kwargs["version"]
+            return super().create_analysis(**kwargs)
+
+    repository = RetryRepository()
+    service = ResearchChatService(StubDb(), SuccessfulProvider(), OneSourceKnowledge())  # type: ignore[arg-type]
+    service.repository = repository  # type: ignore[assignment]
+    service.get_session = lambda **kwargs: SimpleNamespace(session_id=51)  # type: ignore[method-assign]
+    asyncio.run(service.create_session(
+        current_user_id=1, project_id=1020,
+        request=SimpleNamespace(resource_id=16, title=None),
+    ))
+    assert repository.analysis_version == 2
+    assert repository.analysis_generation_status == "READY"
+
+
+def test_resource_session_rejects_non_ready_index_before_analysis() -> None:
+    repository = SessionRepository()
+    resource = repository.get_owned_project_resource()
+    resource.index_status = "indexing"
+    repository.get_owned_project_resource = lambda **kwargs: resource
+    service = ResearchChatService(StubDb(), FailingProvider(), OneSourceKnowledge())  # type: ignore[arg-type]
+    service.repository = repository  # type: ignore[assignment]
+    with pytest.raises(ResearchKnowledgeIndexNotReadyError) as caught:
+        asyncio.run(service.create_session(
+            current_user_id=1, project_id=1020,
+            request=SimpleNamespace(resource_id=16, title=None),
+        ))
+    assert caught.value.index_status == "indexing"
+
+
+def test_resource_chat_uses_single_file_retrieval_and_records_provenance() -> None:
+    calls = []
+
+    class Knowledge:
+        async def search_resource(self, **kwargs):
+            calls.append(kwargs)
+            return [ProjectKnowledgeSource(
+                content="paper evidence", project_id=1020, filename="paper.pdf",
+                file_id=16, chunk_id="chunk-16", chunk_index=2, score=0.91,
+            )]
+
+        async def search(self, **kwargs):
+            raise AssertionError("project search must not run for a resource session")
+
+    class Repository:
+        def get_owned_project(self, **kwargs):
+            return SimpleNamespace(
+                title="Project", topic="Topic", grade=7, class_hours=2,
+                student_level="mixed", student_experience="beginner", class_size=36,
+                lesson_minutes=45, ai_access_mode="shared", devices_json=["tablet"],
+                constraints_json=["no phones"], additional_requirements="group work",
+                context_diagnosis_json={"risk": "access"},
+            )
+
+        def list_messages(self, **kwargs):
+            return []
+
+    service = ResearchChatService(StubDb(), FailingProvider(), Knowledge())  # type: ignore[arg-type]
+    service.repository = Repository()  # type: ignore[assignment]
+    session = SimpleNamespace(
+        id=51, project_id=1020, resource_id=16, conversation_summary=None,
+    )
+    request = asyncio.run(service._chat_request(
+        current_user_id=1, session=session, content="What did this paper find?", analysis=None,
+    ))
+    assert calls[0]["file_id"] == 16
+    assert request.retrieval_scope == "RESOURCE"
+    assert request.student_experience == "beginner"
+    metadata = service._assistant_message_metadata(session, request)
+    assert metadata["retrievalScope"] == "RESOURCE"
+    assert metadata["resourceId"] == 16
+    assert metadata["retrievedSources"] == [{
+        "fileId": 16, "filename": "paper.pdf", "chunkId": "chunk-16",
+        "chunkIndex": 2, "score": 0.91,
+    }]
+
+
+def test_resource_chat_fails_loudly_on_cross_paper_source() -> None:
+    class WrongKnowledge:
+        async def search_resource(self, **kwargs):
+            return [ProjectKnowledgeSource(
+                content="wrong", project_id=1020, filename="other.pdf",
+                file_id=17, chunk_id="chunk-17", chunk_index=0, score=1.0,
+            )]
+
+    class Repository:
+        def get_owned_project(self, **kwargs):
+            return SimpleNamespace(
+                title="P", topic="T", grade=None, class_hours=None,
+                student_level=None, student_experience=None, class_size=None,
+                lesson_minutes=None, ai_access_mode=None, devices_json=None,
+                constraints_json=None, additional_requirements=None,
+                context_diagnosis_json=None,
+            )
+
+        def list_messages(self, **kwargs):
+            return []
+
+    service = ResearchChatService(StubDb(), FailingProvider(), WrongKnowledge())  # type: ignore[arg-type]
+    service.repository = Repository()  # type: ignore[assignment]
+    with pytest.raises(ResearchRetrievalScopeError):
+        asyncio.run(service._chat_request(
+            current_user_id=1,
+            session=SimpleNamespace(id=51, project_id=1020, resource_id=16, conversation_summary=None),
+            content="question", analysis=None,
+        ))
 
 
 def test_bounded_evidence_respects_chunk_and_character_limits(monkeypatch) -> None:

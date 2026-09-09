@@ -209,6 +209,7 @@ class ResearchAnalysisService:
             session_id=session_id,
             analysis_id=analysis_record.id,
             version=analysis_record.version,
+            generation_status=analysis_record.generation_status,
             latest_analysis=ResearchAnalysisStateService.editable_view(analysis),
             field_sources=field_sources,
             teacher_confirmed=analysis_record.teacher_confirmed,

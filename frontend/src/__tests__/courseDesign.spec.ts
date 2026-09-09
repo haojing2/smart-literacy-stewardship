@@ -5,7 +5,7 @@ vi.mock('@/api/http', () => ({
 }))
 
 import http from '@/api/http'
-import { AI_REQUEST_TIMEOUT, diagnoseContext, generateObjectives } from '@/api/courseDesign'
+import { AI_REQUEST_TIMEOUT, diagnoseContext, generateBlueprint, generateObjectives } from '@/api/courseDesign'
 import { buildCourseContextPayload, getCourseDesignApiErrorMessage } from '@/utils/courseDesign'
 
 describe('course-design API boundary', () => {
@@ -24,6 +24,15 @@ describe('course-design API boundary', () => {
     generateObjectives(12)
     expect(vi.mocked(http.post).mock.calls[0]![2]).toEqual({ timeout: AI_REQUEST_TIMEOUT })
     expect(vi.mocked(http.post).mock.calls[1]![2]).toEqual({ timeout: AI_REQUEST_TIMEOUT })
+  })
+
+  it('passes the displayed lesson minutes when generating a blueprint', () => {
+    generateBlueprint(12, 40)
+    expect(vi.mocked(http.post)).toHaveBeenCalledWith(
+      '/projects/12/course-blueprint/generate',
+      { lessonMinutes: 40 },
+      { timeout: AI_REQUEST_TIMEOUT },
+    )
   })
 
   it('reads FastAPI detail.message and displays a clear timeout prompt', () => {

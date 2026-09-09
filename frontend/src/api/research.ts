@@ -31,6 +31,7 @@ export interface BackendChatMessage {
   role: 'USER' | 'ASSISTANT' | 'SYSTEM'
   sequenceNo: number
   content: string
+  metadata?: Record<string, unknown> | null
   createdAt: string
 }
 
@@ -42,6 +43,7 @@ export interface BackendSessionPayload {
   status: 'ACTIVE' | 'COMPLETED' | 'ARCHIVED'
   messages: BackendChatMessage[]
   latestAnalysis: BackendAnalysisPayload | null
+  analysisGenerationStatus?: 'PENDING' | 'READY' | 'FAILED' | null
   readiness: (EvidenceReadiness & { ready?: boolean }) | null
   evidenceCardId?: number | null
   createdAt: string
@@ -140,6 +142,7 @@ export const updateResearchAnalysis = (sessionId: number, analysis: ResearchAnal
       sessionId: number
       analysisId: number
       version: number
+      generationStatus: 'PENDING' | 'READY' | 'FAILED'
       latestAnalysis: ResearchAnalysis
       readiness: EvidenceReadiness
       evidenceDraftGenerated?: boolean

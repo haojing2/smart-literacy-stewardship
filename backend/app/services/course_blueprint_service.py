@@ -51,9 +51,12 @@ class CourseBlueprintService:
         self.evidence_cards = EvidenceCardRepository(db)
 
     async def generate(
-        self, *, current_user_id: int, project_id: int, provider: ResearchAssistantProvider
+        self, *, current_user_id: int, project_id: int,
+        provider: ResearchAssistantProvider, lesson_minutes: int | None = None,
     ) -> dict[str, object]:
         project = self._owned_project(current_user_id=current_user_id, project_id=project_id)
+        if project.lesson_minutes is None and lesson_minutes is not None:
+            project.lesson_minutes = lesson_minutes
         objectives, pedagogy, assessments = self._generation_basis(project)
         request = self._generation_request(project, objectives, pedagogy, assessments)
         result = await self._generate_valid_blueprint(provider, request, project.lesson_minutes)

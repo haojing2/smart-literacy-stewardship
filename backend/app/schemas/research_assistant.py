@@ -89,6 +89,17 @@ class ResearchChatRequest(ResearchAssistantSchema):
     project_topic: str | None = None
     grade: int | None = Field(default=None, ge=1, le=12)
     class_hours: int | None = Field(default=None, ge=1)
+    student_level: str | None = None
+    student_experience: str | None = None
+    class_size: int | None = Field(default=None, ge=1)
+    lesson_minutes: int | None = Field(default=None, ge=1)
+    ai_access_mode: str | None = None
+    devices: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    additional_requirements: str | None = None
+    context_diagnosis: dict[str, Any] | None = None
+    retrieval_scope: Literal["PROJECT", "RESOURCE"] = "PROJECT"
+    retrieval_status: Literal["READY", "EMPTY", "FAILED"] = "EMPTY"
     conversation_summary: str | None = None
     conversation_context: str | None = None
     conversation_messages: list[ResearchConversationMessage] = Field(default_factory=list)
@@ -198,6 +209,7 @@ class ResearchChatSessionResponse(ResearchAssistantSchema):
     status: str
     messages: list[ResearchChatMessageResponse] = Field(default_factory=list)
     latest_analysis: ResearchAnalysisResult | None = None
+    analysis_generation_status: Literal["PENDING", "READY", "FAILED"] | None = None
     readiness: ResearchAnalysisReadiness | None = None
     evidence_card_id: int | None = None
     created_at: datetime
@@ -258,6 +270,7 @@ class ResearchAnalysisVersionResponse(ResearchAssistantSchema):
     session_id: int
     analysis_id: int
     version: int
+    generation_status: Literal["PENDING", "READY", "FAILED"] = "READY"
     latest_analysis: ResearchAnalysisEditableView
     field_sources: dict[str, Literal["MOCK", "TEACHER"]]
     teacher_confirmed: bool

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, Callable, TypeVar
 
@@ -18,6 +19,10 @@ from app.assistants.prompts.course_objective import build_course_objective_messa
 from app.assistants.prompts.course_pedagogy import build_course_pedagogy_messages
 from app.assistants.prompts.course_quality import build_course_quality_messages
 from app.assistants.prompts.research import build_evidence_card_messages, build_research_analysis_messages, build_research_chat_messages, build_research_chat_stream_messages
+from app.assistants.prompts.resource_creation import (
+    build_teaching_resource_messages,
+    validate_generated_resource,
+)
 from app.schemas.course_design import (
     CourseActivityProposal, CourseActivityRegenerationRequest, CourseAssessmentGenerationRequest,
     CourseAssessmentGenerationResult, CourseBlueprintGenerationRequest, CourseBlueprintGenerationResult,
@@ -39,6 +44,7 @@ from app.schemas.resource_creation import (
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 class SparkResearchAssistant(ResearchAssistantProvider):
@@ -120,7 +126,25 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         return await self._from_messages(build_course_quality_messages(request), CourseQualityCheckResult)
 
     async def generate_teaching_resource(self, request: TeachingResourceGenerationRequest) -> TeachingResourceGenerationResult:
-        return await self._structured("teaching resource generation", request, TeachingResourceGenerationResult)
+        def validate(result: TeachingResourceGenerationResult) -> None:
+            try:
+                validate_generated_resource(request.resource_type, result.content, request)
+            except ValueError as exc:
+                raise SparkContractError(str(exc)) from exc
+
+        try:
+            messages = build_teaching_resource_messages(request)
+        except Exception as exc:
+            logger.exception("Teaching resource generation failed stage=prompt_build exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
+            raise
+        try:
+            return await self._from_messages(messages, TeachingResourceGenerationResult, validate)
+        except (SparkResponseParseError, SparkContractError) as exc:
+            logger.exception("Teaching resource generation failed stage=schema_validation exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
+            raise
+        except Exception as exc:
+            logger.exception("Teaching resource generation failed stage=provider_call exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
+            raise
 
     async def recommend_resource_settings(self, request: ResourceSettingsRecommendationRequest) -> ResourceSettingsRecommendationResult:
         return await self._structured("resource settings recommendation", request, ResourceSettingsRecommendationResult)
@@ -158,7 +182,8 @@ class SparkResearchAssistant(ResearchAssistantProvider):
     ) -> ModelT:
         try:
             payload = await self._client.chat_json(messages, repair=False)
-        except SparkResponseParseError:
+        except SparkResponseParseError as exc:
+            logger.warning("Structured model output failed stage=json_parse exception_type=%s; attempting one repair", type(exc).__name__)
             return await self._repair_and_validate(messages, result_type, contract_validator)
         return await self._validate_or_repair(messages, payload, result_type, contract_validator)
 
@@ -171,7 +196,8 @@ class SparkResearchAssistant(ResearchAssistantProvider):
             if contract_validator is not None:
                 contract_validator(result)
             return result
-        except (ValidationError, SparkContractError):
+        except (ValidationError, SparkContractError) as exc:
+            logger.warning("Structured model output failed stage=schema_validation exception_type=%s; attempting one repair", type(exc).__name__)
             return await self._repair_and_validate(messages, result_type, contract_validator)
 
     async def _repair_and_validate(

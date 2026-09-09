@@ -32,6 +32,10 @@ class CourseDesignContext(CourseDesignSchema):
     additional_requirements: str | None = None
 
 
+class CourseBlueprintGenerateRequest(CourseDesignSchema):
+    lesson_minutes: int = Field(gt=0, le=600)
+
+
 class CourseContextDiagnosis(CourseDesignSchema):
     core_problem: str = Field(min_length=1)
     existing_foundation: str = Field(min_length=1)

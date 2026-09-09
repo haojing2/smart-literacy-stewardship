@@ -359,13 +359,22 @@ class MockResearchAssistant(ResearchAssistantProvider):
     async def generate_teaching_resource(
         self, request: TeachingResourceGenerationRequest
     ) -> TeachingResourceGenerationResult:
+        type_blocks = {
+            "TEACHER_GUIDE": {"key": "activity-flow", "title": "教学活动流程", "content": request.activities},
+            "WORKSHEET": {"key": "student-task", "title": "学生学习任务与记录", "content": request.activities},
+            "TASK_CARD": {"key": "task-output", "title": "任务与最终产出", "content": request.activities},
+            "AI_CASE": {"key": "human-ai-dialogue", "title": "Human-AI 对话", "content": [{"human": "提出观点", "ai": "提供可核查的建议"}]},
+            "DISCUSSION": {"key": "discussion-question", "title": "讨论问题", "content": ["哪些证据支持你的判断？"]},
+            "ASSESSMENT": {"key": "assessment-criteria", "title": "评价指标", "content": request.assessments},
+            "REFLECTION": {"key": "reflection-question", "title": "反思问题", "content": ["我依据什么证据形成判断？"]},
+        }
         return TeachingResourceGenerationResult.model_validate({
             "title": f"{request.project.title}：{request.resource_type.value}",
             "content": {
                 "title": f"{request.project.title}：{request.resource_type.value}",
                 "blocks": [
                     {"key": "course-context", "title": "课程依据", "content": {"topic": request.project.topic or "", "objectives": request.objectives}},
-                    {"key": "learning-activities", "title": "教学活动", "content": request.activities},
+                    type_blocks[request.resource_type.value],
                 ],
                 "metadata": {"provider": self.provider_name, "resourceType": request.resource_type.value},
             },

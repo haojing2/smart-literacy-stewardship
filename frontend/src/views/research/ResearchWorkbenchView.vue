@@ -18,14 +18,14 @@ const {
   currentProject, resources, selectedResourceItems, messages, analysis, evidenceDraft,
   readinessScore, readinessStatus, missingRequiredFields, isUploading, isExtracting,
   isAnalyzing, isSending, isUpdatingAnalysis, isGeneratingEvidence, isUpdatingEvidence, isConfirmingEvidence,
-  loading, error, resourceCount, evidenceCount,
+  loading, error, resourceCount, evidenceCount, activeSession, activeScopeLabel,
 } = storeToRefs(store)
 const invalidProject = computed(() => {
   const value = String(route.params.projectId ?? '')
   return !/^\d+$/.test(value) || Number(value) <= 0
 })
 const processing = computed(() => isUploading.value || isExtracting.value || isAnalyzing.value)
-const hasActiveSession = computed(() => store.currentSession !== null)
+const hasActiveSession = computed(() => activeSession.value !== null)
 const isCompletingResearch = ref(false)
 const sessionInitializationFailed = ref(false)
 const researchMockMode = import.meta.env.VITE_RESEARCH_USE_MOCK === 'true'
@@ -123,7 +123,7 @@ onMounted(() => void initialize())
     <template v-else>
       <ResearchContextHeader :project="currentProject" :resource-count="resourceCount" :evidence-count="evidenceCount" :continuing="isCompletingResearch" :mock-mode="researchMockMode" @view-resources="viewResources" @continue-course-design="continueCourseDesign" />
       <section class="research-workspace">
-        <ResearchChatPanel :resources="resources" :selected-resources="selectedResourceItems" :messages="messages" :analysis="analysis" :sending="isSending" :processing="processing" :evidence-ready="readinessStatus === 'READY'" :has-active-session="hasActiveSession" :initialization-failed="sessionInitializationFailed" :send-message="sendMessage" @upload="upload" @retry-message="retryMessage" @retry-resource="store.retryResource" @remove-resource="store.removeSelectedResource" @retry-initialize="initialize" />
+        <ResearchChatPanel :resources="resources" :selected-resources="selectedResourceItems" :active-scope-label="activeScopeLabel" :messages="messages" :analysis="analysis" :sending="isSending" :processing="processing" :evidence-ready="readinessStatus === 'READY'" :has-active-session="hasActiveSession" :initialization-failed="sessionInitializationFailed" :send-message="sendMessage" @upload="upload" @retry-message="retryMessage" @retry-resource="store.retryResource" @remove-resource="store.removeSelectedResource" @retry-initialize="initialize" />
         <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" />
       </section>
     </template>

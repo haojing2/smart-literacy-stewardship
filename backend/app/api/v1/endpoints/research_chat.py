@@ -30,6 +30,7 @@ from app.services.research_chat_service import (
     ResearchChatInactiveError,
     ResearchChatNotFoundError,
     ResearchChatService,
+    ResearchKnowledgeIndexNotReadyError,
     ResearchTextNotReadyError,
 )
 
@@ -71,6 +72,15 @@ async def create_research_chat_session(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": 40902, "message": str(exc)},
+        ) from None
+    except ResearchKnowledgeIndexNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": 40904,
+                "message": str(exc),
+                "indexStatus": exc.index_status,
+            },
         ) from None
     except ResearchAgentError as exc:
         logger.warning(

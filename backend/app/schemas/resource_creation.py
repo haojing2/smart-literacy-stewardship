@@ -102,10 +102,17 @@ class ResourceDraftContent(ResourceCreationSchema):
 class ResourceCourseContext(ResourceCreationSchema):
     title: str = Field(min_length=1, max_length=255)
     topic: str | None = None
-    grade: str | None = Field(default=None, max_length=64)
+    grade: int | str | None = None
+    class_hours: int | None = Field(default=None, ge=1, le=255)
     lesson_minutes: int | None = Field(default=None, ge=1, le=1000)
     student_level: str | None = Field(default=None, max_length=255)
+    student_experience: str | None = None
+    class_size: int | None = Field(default=None, ge=1)
+    ai_access_mode: str | None = Field(default=None, max_length=64)
     devices: list[Any] = Field(default_factory=list)
+    constraints: list[Any] = Field(default_factory=list)
+    additional_requirements: str | None = None
+    context_diagnosis: dict[str, Any] | None = None
 
 
 class ResourceSettingsRecommendationRequest(ResourceCreationSchema):
@@ -127,6 +134,8 @@ class TeachingResourceGenerationRequest(ResourceCreationSchema):
     activities: list[dict[str, Any]] = Field(min_length=1)
     common_settings: dict[str, Any] = Field(default_factory=dict)
     resource_settings: dict[str, Any] = Field(default_factory=dict)
+    research_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    course_blueprint: dict[str, Any] | None = None
 
 
 class TeachingResourceGenerationResult(ResourceCreationSchema):

@@ -64,9 +64,9 @@ def _research_chat_context_messages(
     """Keep conversation, retrieved evidence, and current question separate."""
     system_prompt = (
         "You are a cautious education-research assistant. Answer for the supplied "
-        "current project using the research knowledge base configured on the Research "
-        "Agent platform and the retrieved local project evidence below. For factual "
-        "claims about uploaded papers, prioritize RETRIEVED PROJECT EVIDENCE. Never "
+        "current project using the knowledge base configured on the Research Agent "
+        "platform and the retrieved local evidence below. For factual "
+        "claims about uploaded papers, prioritize the supplied retrieval evidence. Never "
         "fabricate citations, filenames, chunk ids, page numbers, or document origins. "
         "If local evidence is insufficient, say that the current project materials are "
         "insufficient; provider knowledge may only be supplemental background. Only "
@@ -81,6 +81,35 @@ def _research_chat_context_messages(
         f"Class hours: {request.class_hours if request.class_hours is not None else 'Not provided'}",
     ]
     system_prompt += "\n\n[CURRENT PROJECT]\n" + "\n".join(project_lines)
+    scope_description = (
+        f"Only resource {request.resource_id} may be used as uploaded-paper evidence."
+        if request.retrieval_scope == "RESOURCE"
+        else "Evidence may be retrieved from all ready resources in this project."
+    )
+    system_prompt += (
+        "\n\n[RETRIEVAL SCOPE]\n"
+        f"Scope: {request.retrieval_scope}\n{scope_description}\n"
+        "Do not attribute claims to any file outside this scope."
+    )
+    def shown(value: object) -> str:
+        if value is None or value == [] or value == {} or value == "":
+            return "Not provided"
+        if isinstance(value, (list, dict)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    learner_lines = (
+        f"Student level: {shown(request.student_level)}",
+        f"Student experience: {shown(request.student_experience)}",
+        f"Class size: {shown(request.class_size)}",
+        f"Lesson minutes: {shown(request.lesson_minutes)}",
+        f"AI access mode: {shown(request.ai_access_mode)}",
+        f"Devices: {shown(request.devices)}",
+        f"Constraints: {shown(request.constraints)}",
+        f"Additional requirements: {shown(request.additional_requirements)}",
+        f"Context diagnosis: {shown(request.context_diagnosis)}",
+    )
+    system_prompt += "\n\n[LEARNER AND TEACHING CONTEXT]\n" + "\n".join(learner_lines)
     if request.analysis is not None:
         system_prompt += (
             "\n\n[CURRENT RESEARCH ANALYSIS]\n"
@@ -131,7 +160,10 @@ def _recent_conversation_messages(request: ResearchChatRequest) -> list[dict[str
 
 def _project_evidence(request: ResearchChatRequest) -> str:
     if not request.project_knowledge_sources:
-        return "No ready project evidence was retrieved for this question."
+        if request.retrieval_status == "FAILED":
+            return "Evidence retrieval failed; do not interpret this as absence of uploaded materials."
+        scope = "selected resource" if request.retrieval_scope == "RESOURCE" else "project"
+        return f"Retrieval succeeded but returned no relevant ready evidence in the {scope} scope."
     return "\n\n".join(
         "\n".join(
             (

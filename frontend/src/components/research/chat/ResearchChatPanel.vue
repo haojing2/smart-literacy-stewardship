@@ -9,9 +9,10 @@ import FileAttachmentCard from './FileAttachmentCard.vue'
 import ChatComposer from './ChatComposer.vue'
 import ScrollToBottomButton from './ScrollToBottomButton.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   resources: ResearchResource[]
   selectedResources: ResearchResource[]
+  activeScopeLabel?: string
   messages: ResearchChatMessage[]
   sending: boolean
   processing: boolean
@@ -20,7 +21,7 @@ const props = defineProps<{
   analysis: ResearchAnalysis | null
   initializationFailed?: boolean
   sendMessage: (content: string) => Promise<boolean>
-}>()
+}>(), { activeScopeLabel: '项目知识库' })
 const emit = defineEmits<{
   upload: [file: File]
   retryMessage: [message: ResearchChatMessage]
@@ -222,7 +223,7 @@ onBeforeUnmount(finishTyping)
 
 <template>
   <section class="chat-panel">
-    <SelectedResourcesBar :resources="selectedResources" @remove="$emit('removeResource', $event)" @upload="fileInput?.click()" />
+    <SelectedResourcesBar :resources="selectedResources" :scope-label="activeScopeLabel" @remove="$emit('removeResource', $event)" @upload="fileInput?.click()" />
     <input ref="fileInput" hidden type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" @change="chooseFile" />
 
     <div ref="messageList" class="message-list" @scroll="handleScroll">

@@ -7,6 +7,7 @@ export type UploadStatus =
   | 'UPLOADED'
   | 'TEXT_EXTRACTING'
   | 'TEXT_EXTRACTED'
+  | 'INDEXING'
   | 'ANALYZING'
   | 'ANALYZED'
   | 'FAILED'
@@ -69,6 +70,7 @@ export interface ResearchChatMessage {
   createdAt: string
   resourceId?: number
   sendStatus?: 'SENDING' | 'SENT' | 'FAILED'
+  metadata?: Record<string, unknown> | null
 }
 
 export interface ResearchChatSession {

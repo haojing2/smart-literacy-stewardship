@@ -8,6 +8,7 @@ from app.core.responses import success_response
 from app.db.dependencies import get_db
 from app.models.user import SysUser
 from app.schemas.course_design import (
+    CourseBlueprintGenerateRequest,
     CourseActivityTransformRequest,
     CourseActivityUpdateRequest,
 )
@@ -36,13 +37,18 @@ def _project_not_found() -> HTTPException:
 
 @router.post("/{project_id}/course-blueprint/generate")
 async def generate_blueprint(
-    project_id: int, current_user: SysUser = Depends(get_current_user),
+    project_id: int,
+    payload: CourseBlueprintGenerateRequest | None = None,
+    current_user: SysUser = Depends(get_current_user),
     db: Session = Depends(get_db),
     provider: ResearchAssistantProvider = Depends(get_research_assistant_provider),
 ):
     try:
         result = await CourseBlueprintService(db).generate(
-            current_user_id=current_user.id, project_id=project_id, provider=provider
+            current_user_id=current_user.id,
+            project_id=project_id,
+            provider=provider,
+            lesson_minutes=payload.lesson_minutes if payload else None,
         )
     except ProjectNotFoundError:
         raise _project_not_found() from None

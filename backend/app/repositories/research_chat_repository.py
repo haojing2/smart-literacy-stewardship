@@ -190,6 +190,7 @@ class ResearchChatRepository:
         version: int,
         structured_data: dict[str, object],
         field_sources: dict[str, str],
+        generation_status: str = "READY",
     ) -> ResearchAnalysis:
         analysis = ResearchAnalysis(
             resource_id=resource_id,
@@ -199,12 +200,20 @@ class ResearchChatRepository:
             structured_data_json=structured_data,
             field_sources_json=field_sources,
             status="VALIDATED",
+            generation_status=generation_status,
             teacher_confirmed=False,
             teacher_confirmed_at=None,
         )
         self.db.add(analysis)
         self.db.flush()
         return analysis
+
+    def mark_analysis_generation_failed(
+        self, analysis: ResearchAnalysis, *, structured_data: dict[str, object]
+    ) -> None:
+        analysis.structured_data_json = structured_data
+        analysis.generation_status = "FAILED"
+        self.db.flush()
 
     def confirm_analysis(self, analysis: ResearchAnalysis) -> None:
         analysis.teacher_confirmed = True

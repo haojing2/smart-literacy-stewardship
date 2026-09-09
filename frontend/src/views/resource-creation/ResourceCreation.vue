@@ -13,10 +13,20 @@ import {
 const route = useRoute()
 const projectId = computed(() => String(route.params.projectId || route.query.projectId || ''))
 const jobId = ref<number | null>(null)
-const resourceRecords = ref<Record<string, { id: number; versionId?: number }>>({})
+const resourceRecords = ref<Record<string, { id: number; versionId?: number; versionNo?: number }>>({})
 const courseInfo = ref({ title: '', grade: '', lessonMinutes: 0, objectiveCount: 0, activityCount: 0, pedagogy: '' })
+const savedResourceJob = ref<any | null>(null)
+const draftViewerVisible = ref(false)
 const apiTypeByUi: Record<string, string> = { ppt: 'PPT', 'teacher-guide': 'TEACHER_GUIDE', worksheet: 'WORKSHEET', 'task-card': 'TASK_CARD', 'ai-case': 'AI_CASE', discussion: 'DISCUSSION', assessment: 'ASSESSMENT', reflection: 'REFLECTION' }
 const uiTypeByApi: Record<string, string> = Object.fromEntries(Object.entries(apiTypeByUi).map(([key, value]) => [value, key]))
+
+function apiErrorMessage(error: unknown, fallback: string) {
+  const value = error as { response?: { status?: number; data?: { message?: string; detail?: string | { message?: string } } }; message?: string }
+  const detail = value.response?.data?.detail
+  const backendMessage = typeof detail === 'string' ? detail : detail?.message || value.response?.data?.message
+  const status = value.response?.status
+  return `${status ? `HTTP ${status}: ` : ''}${backendMessage || value.message || fallback}`
+}
 
 const currentMode = ref<'generate' | 'adapt' | null>(null)
 const currentGenerateStep = ref(1)
@@ -29,7 +39,24 @@ const recommendationNotice = ref(false)
 const isGeneratingDraft = ref(false)
 type DraftBlock = { id: string; heading: string; text: string; table?: boolean }
 type ResourceDraft = { title: string; blocks: DraftBlock[] }
-const resourceDrafts = ref<Record<string, ResourceDraft>>({
+const mockResourceDrafts: Record<string, ResourceDraft> = {
+  ppt: {
+    title: '教学PPT：AI信息核验',
+    blocks: [
+      { id: 'ppt-1', heading: '导入：AI回答一定可信吗？', text: '展示一则包含可疑信息的AI回答，引导学生提出核验问题。' },
+      { id: 'ppt-2', heading: '方法：信息核验三步法', text: '识别关键主张、寻找可靠来源、比较证据并修订结论。' },
+      { id: 'ppt-3', heading: '课堂挑战', text: '小组核验案例中的三条信息，并说明接受、修改或拒绝的理由。' },
+    ],
+  },
+  'teacher-guide': {
+    title: '教师流程卡：AI信息核验课',
+    blocks: [
+      { id: 'teacher-guide-1', heading: '5分钟｜情境导入', text: '展示AI回答并追问：“其中哪些信息值得进一步确认？”观察学生能否识别可核验主张。' },
+      { id: 'teacher-guide-2', heading: '20分钟｜小组证据核查', text: '组织学生分工查找两个来源，提示比较来源权威性、发布时间和证据一致性。' },
+      { id: 'teacher-guide-3', heading: '10分钟｜判断与修订', text: '邀请小组说明接受、修改或拒绝AI内容的理由，并依据证据修订原回答。' },
+      { id: 'teacher-guide-4', heading: '5分钟｜评价与收束', text: '使用Exit Ticket检查学生能否说出一条信息核验原则。' },
+    ],
+  },
   worksheet: {
     title: 'AI信息核验学习单',
     blocks: [
@@ -47,6 +74,23 @@ const resourceDrafts = ref<Record<string, ResourceDraft>>({
       { id: 'task-card-3', heading: '完成标准', text: '提交一份包含来源、证据比较和修改建议的小组任务单。' },
     ],
   },
+  'ai-case': {
+    title: 'AI对话案例：校园植物识别',
+    blocks: [
+      { id: 'ai-case-1', heading: '案例情境', text: '学生请AI判断校园里一株植物的名称，并准备将答案写入观察报告。' },
+      { id: 'ai-case-2', heading: 'Human-AI对话', text: '学生：这是什么植物？\nAI：它一定是香樟，因为叶片是绿色的。\n学生：仅凭叶片颜色能确定吗？还需要核查哪些特征？' },
+      { id: 'ai-case-3', heading: '关键判断', text: '指出AI回答中证据不足之处，列出需要补充观察或查证的信息。' },
+      { id: 'ai-case-4', heading: '讨论提示', text: '哪些内容可以保留？哪些需要修改或拒绝？请说明依据。' },
+    ],
+  },
+  discussion: {
+    title: '课堂讨论问题：如何判断AI信息可信度',
+    blocks: [
+      { id: 'discussion-1', heading: '理解与解释', text: '为什么“AI说得很完整”不能直接证明信息可靠？' },
+      { id: 'discussion-2', heading: '比较与分析', text: '当两个来源结论不一致时，可以从哪些方面比较它们的可信度？' },
+      { id: 'discussion-3', heading: '评价与迁移', text: '如果同学准备引用AI答案完成作业，你会建议他先做哪些核查？为什么？' },
+    ],
+  },
   assessment: {
     title: '教学评价工具：证据核验观察表',
     blocks: [
@@ -55,9 +99,18 @@ const resourceDrafts = ref<Record<string, ResourceDraft>>({
       { id: 'assessment-3', heading: 'Exit Ticket', text: '写下你在本节课学到的一条信息核验原则。' },
     ],
   },
-})
-// Server state replaces the legacy design-time examples immediately on load.
-resourceDrafts.value = {}
+  reflection: {
+    title: '课后反思单：我的AI信息核验过程',
+    blocks: [
+      { id: 'reflection-1', heading: '我的学习收获', text: '今天我学会了哪些判断AI信息可信度的方法？' },
+      { id: 'reflection-2', heading: '我的判断依据', text: '哪一条证据最影响我的判断？为什么？' },
+      { id: 'reflection-3', heading: '困难与变化', text: '核验过程中最困难的是什么？我的初始观点发生了什么变化？' },
+      { id: 'reflection-4', heading: '下一步行动', text: '下一次使用AI获取信息时，我会先做什么？' },
+    ],
+  },
+}
+const cloneMockResourceDrafts = () => JSON.parse(JSON.stringify(mockResourceDrafts)) as Record<string, ResourceDraft>
+const resourceDrafts = ref<Record<string, ResourceDraft>>(cloneMockResourceDrafts())
 const activePreviewResourceId = ref('')
 const isEditingDraft = ref(false)
 const draftSnapshot = ref<Record<string, ResourceDraft> | null>(null)
@@ -100,9 +153,39 @@ const resourceTypes = [
   { id: 'assessment', icon: '✓', title: '教学评价工具', description: '生成观察表、Rubric、Exit Ticket等。' },
   { id: 'reflection', icon: '↺', title: '课后反思单', description: '支持学生或教师进行课后反思。' },
 ]
+const commonSettingLabels: Record<string, string> = { difficulty: '内容难度', grade: '使用对象', studentLevel: '学生水平', duration: '活动时间', format: '任务方式', lowDeviceAlternative: '低设备替代方案', languageStyle: '语言风格', lessonMinutes: '每课时分钟', devices: '设备条件', resourceStyle: '资源风格' }
+const resourceSettingLabels: Record<string, string> = { duration: '预计完成时间', scaffolding: '支架程度', example: '提供示例', recordArea: '提供记录区域', reflection: '提供反思问题', pages: '建议页数', density: '信息密度', visualRatio: '图文比例', speakerNotes: '教师讲解提示', questions: '课堂提问', quantity: '数量', format: '组织形式', timeHint: '时间提示', criteria: '完成标准', role: 'AI角色', turns: '对话轮数', errorAnswer: '包含待核查回答', judgement: '要求学生判断', discussionPrompt: '讨论提示', type: '评价类型', evaluator: '评价主体', rubric: '生成Rubric', levels: 'Rubric等级数', observableIndicators: '可观察行为指标', detail: '内容详细程度', timing: '时间提示', prompts: '教学提示', thinkingLevel: '思维层次', groupPrompt: '小组讨论提示', audience: '反思对象', questionCount: '问题数量', actionPlan: '行动计划' }
+type SavedResourceType = { apiType: string; uiType: string; title: string }
+const savedSelectedResources = computed<SavedResourceType[]>(() => ((savedResourceJob.value?.selectedTypes || []) as string[]).flatMap((apiType) => {
+  const uiType = uiTypeByApi[apiType]
+  if (!uiType) return []
+  return [{ apiType, uiType, title: resourceTypes.find((item) => item.id === uiType)?.title || apiType }]
+}))
+const savedCommonSettings = computed(() => Object.entries(savedResourceJob.value?.commonSettings || {}).map(([key, value]) => ({ key, label: commonSettingLabels[key] || key, value: displaySettingValue(value) })))
+const savedResourceSettings = computed(() => savedSelectedResources.value.map((resource) => ({
+  ...resource,
+  settings: Object.entries(savedResourceJob.value?.resourceSettings?.[resource.uiType] || {}).map(([key, value]) => ({ key, label: resourceSettingLabels[key] || key, value: displaySettingValue(value) })),
+})))
+const savedJobStatus = computed(() => ({ DRAFT: '草稿', GENERATING: '生成中', READY: '已生成', FAILED: '生成失败' }[savedResourceJob.value?.status as string] || savedResourceJob.value?.status || '草稿'))
+const savedJobUpdatedAt = computed(() => savedResourceJob.value?.updatedAt ? new Date(savedResourceJob.value.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '—')
+
+function displaySettingValue(value: unknown) {
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (Array.isArray(value)) return value.length ? value.join('、') : '未设置'
+  if (value === null || value === undefined || value === '') return '未设置'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function continueEditingDraft() {
+  draftViewerVisible.value = false
+  currentMode.value = 'generate'
+  currentGenerateStep.value = 2
+}
 const activeResource = computed(() => resourceTypes.find((resource) => resource.id === activeResourceId.value) ?? resourceTypes[0])
 const activePreviewResource = computed(() => resourceTypes.find((resource) => resource.id === activePreviewResourceId.value) ?? resourceTypes[0])
 const activeDraft = computed(() => resourceDrafts.value[activePreviewResourceId.value] ?? { title: `${activePreviewResource.value?.title ?? '教学资源'}初稿`, blocks: [{ id: 'generic-1', heading: '资源内容', text: '该资源的初稿内容将在后续版本中完善。' }] })
+const savedDraftCount = computed(() => selectedResources.value.filter((id) => Boolean(resourceRecords.value[id]?.versionId)).length)
 
 watch(selectedResources, (resources) => {
   if (!resources.includes(activeResourceId.value)) activeResourceId.value = resources[0] ?? ''
@@ -112,14 +195,18 @@ watch(selectedResources, (resources) => {
 async function saveDraft() {
   if (!projectId.value) return ElMessage.warning('请从课程智设中的项目入口进入资源智创')
   try {
-    const payload = { selectedTypes: selectedResources.value.map((item) => apiTypeByUi[item]), commonSettings: { ...commonSettings }, resourceSettings: { ...resourceSettings }, currentStep: currentGenerateStep.value }
+    const payload = { selectedTypes: selectedResources.value.map((item) => apiTypeByUi[item]), commonSettings: { ...commonSettings }, resourceSettings: { ...resourceSettings } }
     if (!jobId.value) {
       const response = await createResourceJob(projectId.value, { projectId: Number(projectId.value), mode: 'COURSE_GENERATE', ...payload })
       jobId.value = response.data.data.job.jobId
-    } else await updateResourceJob(projectId.value, jobId.value, payload)
+      savedResourceJob.value = response.data.data.job
+    } else {
+      const response = await updateResourceJob(projectId.value, jobId.value, { ...payload, currentStep: currentGenerateStep.value })
+      savedResourceJob.value = response.data.data.job
+    }
     saveStatus.value = '草稿已保存'
     ElMessage.success('草稿已保存')
-  } catch { ElMessage.error('草稿保存失败') }
+  } catch (error) { ElMessage.error(apiErrorMessage(error, '草稿保存失败')) }
 }
 
 function toggleResource(resourceId: string) {
@@ -156,7 +243,7 @@ async function generateDraft() {
     await restoreServerState()
     isGeneratingDraft.value = false
     currentGenerateStep.value = 3
-  } catch { isGeneratingDraft.value = false; ElMessage.error('资源生成失败') }
+  } catch (error) { isGeneratingDraft.value = false; ElMessage.error(apiErrorMessage(error, '资源生成失败')) }
 }
 function startEditingDraft() {
   draftSnapshot.value = JSON.parse(JSON.stringify(resourceDrafts.value)) as Record<string, ResourceDraft>
@@ -290,10 +377,12 @@ function fromServerContent(content: any): ResourceDraft {
 }
 async function restoreServerState() {
   if (!projectId.value) return
+  const previousActivePreviewId = activePreviewResourceId.value
   const response = await getResourceCreation(projectId.value)
   const state = response.data.data
   const job = state.job
   jobId.value = job?.jobId || null
+  savedResourceJob.value = job || null
   if (job) {
     currentMode.value = job.mode === 'COURSE_GENERATE' ? 'generate' : 'adapt'
     currentGenerateStep.value = job.currentStep || 1
@@ -302,17 +391,20 @@ async function restoreServerState() {
     Object.assign(resourceSettings, job.resourceSettings || {})
   }
   resourceRecords.value = {}
-  resourceDrafts.value = {}
+  // Keep mock previews for resource types without a generated server version.
+  resourceDrafts.value = cloneMockResourceDrafts()
   assistantSuggestions.value = []
   for (const resource of state.resources || []) {
     const uiType = uiTypeByApi[resource.resourceType]
     if (!uiType) continue
     const detail = (await getTeachingResource(projectId.value, resource.resourceId)).data.data
-    resourceRecords.value[uiType] = { id: resource.resourceId, versionId: detail.currentVersion?.versionId }
-    resourceDrafts.value[uiType] = fromServerContent(detail.currentVersion?.content)
+    resourceRecords.value[uiType] = { id: resource.resourceId, versionId: detail.currentVersion?.versionId, versionNo: detail.currentVersion?.versionNo }
+    if (detail.currentVersion?.content) resourceDrafts.value[uiType] = fromServerContent(detail.currentVersion.content)
     assistantSuggestions.value.push(...(detail.suggestions || []).map((item: any) => ({ id: item.suggestionId, text: item.suggestedContent || item.reason || '', status: item.status === 'PENDING' ? 'pending' : item.status === 'REJECTED' ? 'ignored' : 'applied' })))
   }
-  activePreviewResourceId.value = selectedResources.value[0] || ''
+  activePreviewResourceId.value = selectedResources.value.includes(previousActivePreviewId)
+    ? previousActivePreviewId
+    : selectedResources.value.find((id) => Boolean(resourceRecords.value[id]?.versionId)) || selectedResources.value[0] || ''
 }
 async function initialize() {
   if (!projectId.value) return
@@ -333,7 +425,7 @@ onMounted(() => { void initialize() })
         <h1>资源智创</h1>
         <p class="page-description">将教学设计转化为可直接使用的课堂资源，并通过教师—AI协同持续优化。</p>
       </div>
-      <div class="save-area"><el-button type="primary" @click="saveDraft">保存草稿</el-button><span>{{ saveStatus }}</span></div>
+      <div class="save-area"><div class="save-buttons"><el-button :disabled="!savedResourceJob" @click="draftViewerVisible = true">查看草稿</el-button><el-button type="primary" @click="saveDraft">保存草稿</el-button></div><span>{{ saveStatus }}</span></div>
     </header>
 
     <section v-if="!currentMode" class="mode-section" aria-label="资源智创工作模式">
@@ -365,9 +457,9 @@ onMounted(() => { void initialize() })
         </article>
 
         <section class="resource-selection-card">
-          <header class="selection-header"><div><h2>选择需要生成的教学资源</h2><p>可以一次选择一种或多种资源，系统将根据当前课程设计分别生成。</p></div><div class="batch-actions"><el-button link @click="selectAllResources">全选</el-button><el-button link @click="clearResources">清空</el-button></div></header>
+          <header class="selection-header"><div><h2>选择需要生成的教学资源</h2><p>可以一次选择一种或多种资源，系统将根据当前课程设计分别生成。</p></div><div class="batch-actions" aria-label="批量选择资源"><el-button link @click="selectAllResources">全选</el-button><span aria-hidden="true"></span><el-button link @click="clearResources">清空</el-button></div></header>
           <div class="resource-grid">
-            <article v-for="resource in resourceTypes" :key="resource.id" class="resource-card" :class="{ selected: selectedResources.includes(resource.id) }" @click="toggleResource(resource.id)">
+            <article v-for="resource in resourceTypes" :key="resource.id" class="resource-card" :class="[`resource-card--${resource.id}`, { selected: selectedResources.includes(resource.id) }]" role="checkbox" tabindex="0" :aria-checked="selectedResources.includes(resource.id)" @click="toggleResource(resource.id)" @keydown.space.prevent="toggleResource(resource.id)" @keydown.enter.prevent="toggleResource(resource.id)">
               <header><span class="resource-icon" aria-hidden="true">{{ resource.icon }}</span><el-checkbox :model-value="selectedResources.includes(resource.id)" :aria-label="`选择${resource.title}`" @click.stop @change="toggleResource(resource.id)" /></header>
               <h3>{{ resource.title }}</h3><p>{{ resource.description }}</p>
             </article>
@@ -406,9 +498,9 @@ onMounted(() => { void initialize() })
       </section>
 
       <section v-else class="draft-stage">
-        <header class="draft-header"><div><p class="section-eyebrow">资源初稿已生成</p><h2>资源预览与编辑</h2><p>3项资源 · 基于当前课程方案生成</p></div><el-button :loading="isRegeneratingAll" @click="regenerateAllDrafts">重新生成全部</el-button></header>
+        <header class="draft-header"><div><p class="section-eyebrow">资源初稿已生成</p><h2>资源预览与编辑</h2><p>{{ savedDraftCount }}项已保存 · {{ selectedResources.length }}项已选择 · 基于当前课程方案生成</p></div><el-button :loading="isRegeneratingAll" @click="regenerateAllDrafts">重新生成全部</el-button></header>
         <section class="draft-workspace">
-          <aside class="draft-resource-list"><h2>资源列表</h2><button v-for="resource in resourceTypes.filter((item) => selectedResources.includes(item.id))" :key="resource.id" :class="{ active: activePreviewResourceId === resource.id }" @click="activePreviewResourceId = resource.id"><span>{{ resource.icon }}</span><div><strong>{{ resource.title }}</strong><small>已生成</small></div></button></aside>
+          <aside class="draft-resource-list"><h2>资源列表</h2><button v-for="resource in resourceTypes.filter((item) => selectedResources.includes(item.id))" :key="resource.id" :class="{ active: activePreviewResourceId === resource.id }" @click="activePreviewResourceId = resource.id"><span>{{ resource.icon }}</span><div><strong>{{ resource.title }}</strong><small>{{ resourceRecords[resource.id]?.versionId ? `已保存 · v${resourceRecords[resource.id]?.versionNo || 1}` : '示例预览' }}</small></div></button></aside>
           <article class="draft-editor">
             <header class="editor-header"><div><p class="section-eyebrow">当前资源</p><h2>{{ activeDraft.title }}</h2><span v-if="teacherModified" class="modified-tag">教师已修改</span></div><div class="editor-actions"><el-button @click="assistantVisible = true">AI共创助手</el-button><el-button v-if="!isEditingDraft" @click="startEditingDraft">编辑</el-button><template v-else><el-button @click="cancelDraftEdits">取消</el-button><el-button type="primary" @click="saveDraftEdits">保存修改</el-button></template></div></header>
             <section class="draft-content">
@@ -429,6 +521,15 @@ onMounted(() => { void initialize() })
   </main>
 
   <el-dialog v-model="coursePlanVisible" title="课程方案" width="520px"><p class="course-plan-dialog">当前课程方案包含 {{ courseInfo.objectiveCount }} 个学习目标、{{ courseInfo.activityCount }} 个教学环节及对应评价设计。</p></el-dialog>
+  <el-drawer v-model="draftViewerVisible" title="资源智创草稿" size="min(560px, 94vw)" class="draft-viewer-drawer">
+    <div v-if="savedResourceJob" class="draft-viewer">
+      <section class="draft-summary"><div><span>当前状态</span><strong>{{ savedJobStatus }}</strong></div><div><span>最近更新时间</span><strong>{{ savedJobUpdatedAt }}</strong></div><div><span>当前步骤</span><strong>第 {{ savedResourceJob.currentStep }} 步</strong></div></section>
+      <section class="draft-viewer-section"><h3>已选择资源</h3><div class="draft-type-list"><span v-for="resource in savedSelectedResources" :key="resource.apiType">{{ resource.title }}</span><p v-if="!savedSelectedResources.length">尚未选择资源</p></div></section>
+      <section class="draft-viewer-section"><h3>通用生成条件</h3><dl v-if="savedCommonSettings.length" class="draft-setting-list"><div v-for="setting in savedCommonSettings" :key="setting.key"><dt>{{ setting.label }}</dt><dd>{{ setting.value }}</dd></div></dl><p v-else class="draft-empty">尚未保存通用生成条件</p></section>
+      <section class="draft-viewer-section"><h3>各资源专属设置</h3><div class="draft-specific-list"><article v-for="resource in savedResourceSettings" :key="resource.apiType"><h4>{{ resource.title }}</h4><dl v-if="resource.settings.length" class="draft-setting-list"><div v-for="setting in resource.settings" :key="setting.key"><dt>{{ setting.label }}</dt><dd>{{ setting.value }}</dd></div></dl><p v-else class="draft-empty">使用默认设置</p></article></div></section>
+    </div>
+    <template #footer><div class="draft-viewer-actions"><el-button @click="draftViewerVisible = false">关闭</el-button><el-button type="primary" @click="continueEditingDraft">继续编辑</el-button></div></template>
+  </el-drawer>
   <el-drawer v-model="assistantVisible" title="AI共创助手" size="min(420px, 92vw)">
     <div class="assistant-panel">
       <p class="assistant-intro">我可以帮助检查、提出建议和生成修改版本，最终修改由你决定。</p>
@@ -442,11 +543,90 @@ onMounted(() => { void initialize() })
 
 <style scoped>
 .resource-creation-page { width: 100%; max-width: 1400px; min-height: 100%; margin: 0 auto; color: #101828; }
-.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; padding: 4px 2px 28px; }.eyebrow { margin: 0 0 7px; color: #1677ff; font-size: 13px; font-weight: 650; }h1 { margin: 0; color: #101828; font-size: 27px; font-weight: 650; letter-spacing: -.02em; }.page-description { margin: 10px 0 0; color: #667085; font-size: 14px; line-height: 1.65; }.save-area { display: flex; flex: none; align-items: center; gap: 10px; padding-top: 17px; }.save-area span { color: #98a2b3; font-size: 13px; white-space: nowrap; }
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; padding: 4px 2px 28px; }.eyebrow { margin: 0 0 7px; color: #1677ff; font-size: 13px; font-weight: 650; }h1 { margin: 0; color: #101828; font-size: 27px; font-weight: 650; letter-spacing: -.02em; }.page-description { margin: 10px 0 0; color: #667085; font-size: 14px; line-height: 1.65; }.save-area { display: flex; flex: none; align-items: center; gap: 10px; padding-top: 17px; }.save-area>span { color: #98a2b3; font-size: 13px; white-space: nowrap; }.save-buttons { display: flex; align-items: center; gap: 8px; }.save-buttons :deep(.el-button) { margin: 0; }
 .mode-section, .mode-placeholder { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.mode-section { padding: 28px; }.section-intro h2, .mode-placeholder h2 { margin: 0; color: #1d2939; font-size: 18px; font-weight: 650; }.section-intro p { margin: 8px 0 0; color: #667085; font-size: 14px; }.mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 25px; }.mode-card { display: flex; min-height: 285px; flex-direction: column; padding: 24px; border: 1px solid #eaecf0; border-radius: 12px; background: #fff; transition: border-color .18s ease, box-shadow .18s ease; }.mode-card:hover { border-color: #bcd6f5; box-shadow: 0 5px 15px rgb(16 24 40 / 6%); }.mode-card.recommended { border-color: #d4e5f9; background: #fbfdff; }.mode-card header { display: flex; align-items: center; justify-content: space-between; }.mode-icon { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #dbe8f8; border-radius: 11px; color: #1677ff; background: #edf5ff; font-size: 21px; }.adapt-icon { color: #4774a8; background: #f4f8fd; }.recommendation-label { padding: 4px 9px; border-radius: 10px; color: #4774a8; background: #edf5ff; font-size: 11px; }.mode-card h3 { margin: 22px 0 0; color: #1d2939; font-size: 18px; font-weight: 650; }.mode-card p { max-width: 470px; margin: 10px 0 0; color: #667085; font-size: 14px; line-height: 1.75; }.mode-card footer { margin-top: auto; padding-top: 24px; }.mode-placeholder { display: grid; min-height: 365px; place-content: center; padding: 34px 20px; text-align: center; }.placeholder-icon { display: grid; width: 48px; height: 48px; margin: 0 auto 16px; place-items: center; border: 1px solid #dbe8f8; border-radius: 13px; color: #1677ff; background: #edf5ff; font-size: 23px; }.mode-placeholder p { margin: 9px 0 21px; color: #667085; font-size: 14px; }
 .creation-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; padding: 13px 17px; border: 1px solid #e6eef8; border-radius: 10px; color: #98a2b3; background: #fff; font-size: 13px; }.creation-flow span.active { color: #1677ff; font-weight: 650; }.creation-flow i { color: #c7d7e9; font-style: normal; }.generate-workspace { display: grid; gap: 18px; }.current-course-card, .resource-selection-card { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.current-course-card { padding: 22px 24px; }.current-course-card header, .selection-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }.section-eyebrow { margin: 0 0 6px; color: #1677ff; font-size: 12px; font-weight: 650; }.current-course-card h2, .selection-header h2 { margin: 0; color: #1d2939; font-size: 17px; font-weight: 650; }.course-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }.course-meta span { padding: 4px 8px; border-radius: 5px; color: #4774a8; background: #edf5ff; font-size: 12px; }.current-course-card>p { margin: 13px 0 0; color: #667085; font-size: 13px; }.resource-selection-card { padding: 24px; }.selection-header p { margin: 8px 0 0; color: #667085; font-size: 13px; }.batch-actions { display: flex; flex: none; gap: 9px; }.batch-actions :deep(.el-button) { margin: 0; }.resource-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }.resource-card { min-height: 178px; padding: 15px; border: 1px solid #eaecf0; border-radius: 10px; background: #fff; cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease; }.resource-card:hover { border-color: #bdd7f5; }.resource-card.selected { border-color: #8bbcf4; background: #f8fbff; box-shadow: 0 0 0 2px rgb(22 119 255 / 5%); }.resource-card header { display: flex; align-items: flex-start; justify-content: space-between; }.resource-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 8px; color: #1677ff; background: #edf5ff; font-size: 15px; }.resource-card h3 { margin: 15px 0 0; color: #344054; font-size: 14px; font-weight: 650; }.resource-card p { margin: 7px 0 0; color: #667085; font-size: 12px; line-height: 1.65; }.selection-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; padding-top: 18px; border-top: 1px solid #edf0f3; }.course-plan-dialog { margin: 0; color: #667085; font-size: 14px; line-height: 1.75; }
 .settings-workspace { display: grid; gap: 18px; }.common-settings-card, .selected-resource-list, .exclusive-settings-card { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.common-settings-card { padding: 23px 24px; }.common-settings-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }.common-settings-card h2, .selected-resource-list h2, .exclusive-settings-card h2 { margin: 0; color: #1d2939; font-size: 17px; font-weight: 650; }.recommendation-notice { margin: 15px 0 0; padding: 9px 11px; border-radius: 7px; color: #4774a8; background: #f4f8fd; font-size: 13px; }.common-settings-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; margin-top: 21px; }.common-settings-form :deep(.el-form-item), .exclusive-form :deep(.el-form-item) { margin-bottom: 16px; }.common-settings-form :deep(.el-form-item__label), .exclusive-form :deep(.el-form-item__label) { padding-bottom: 6px; color: #344054; font-size: 13px; font-weight: 600; }.common-settings-form :deep(.el-select), .common-settings-form :deep(.el-radio-group), .common-settings-form :deep(.el-input) { width: 100%; }.resource-settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; }.selected-resource-list { display: grid; align-content: start; gap: 4px; padding: 19px 13px; }.selected-resource-list h2 { padding: 0 8px 10px; font-size: 15px; }.selected-resource-list button { display: flex; align-items: center; gap: 9px; padding: 10px 9px; border: 0; border-radius: 7px; color: #475467; background: transparent; cursor: pointer; font: inherit; font-size: 13px; text-align: left; }.selected-resource-list button:hover, .selected-resource-list button.active { color: #1677ff; background: #edf5ff; }.selected-resource-list button span { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 6px; color: #4774a8; background: #f4f8fd; font-size: 12px; }.exclusive-settings-card { min-height: 310px; padding: 23px 24px; }.exclusive-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; margin-top: 20px; }.exclusive-form :deep(.el-select), .exclusive-form :deep(.el-input), .exclusive-form :deep(.el-input-number) { width: 100%; }.settings-actions { display: flex; align-items: center; justify-content: space-between; padding-top: 3px; }.settings-actions>div { display: flex; align-items: center; gap: 12px; }.settings-actions span { color: #667085; font-size: 13px; }.generate-placeholder { min-height: 420px; }
 .draft-stage { display: grid; gap: 18px; }.draft-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 22px 24px; border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.draft-header h2, .draft-resource-list h2, .editor-header h2 { margin: 0; color: #1d2939; font-size: 18px; font-weight: 650; }.draft-header>div>p:last-child { margin: 7px 0 0; color: #667085; font-size: 13px; }.draft-workspace { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; min-width: 0; }.draft-resource-list, .draft-editor { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.draft-resource-list { display: grid; align-content: start; gap: 5px; padding: 19px 13px; }.draft-resource-list h2 { padding: 0 8px 10px; font-size: 15px; }.draft-resource-list button { display: flex; align-items: center; gap: 9px; padding: 11px 9px; border: 0; border-radius: 8px; color: #475467; background: transparent; cursor: pointer; font: inherit; text-align: left; }.draft-resource-list button:hover, .draft-resource-list button.active { color: #1677ff; background: #edf5ff; }.draft-resource-list button>span { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 7px; color: #4774a8; background: #f4f8fd; font-size: 13px; }.draft-resource-list strong, .draft-resource-list small { display: block; }.draft-resource-list strong { font-size: 13px; font-weight: 600; }.draft-resource-list small { margin-top: 2px; color: #98a2b3; font-size: 11px; }.draft-editor { min-width: 0; padding: 23px 24px; }.editor-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid #edf0f3; }.modified-tag { display: inline-block; margin-top: 8px; padding: 3px 8px; border-radius: 9px; color: #4774a8; background: #edf5ff; font-size: 11px; }.editor-actions { display: flex; align-items: center; gap: 10px; }.assistant-reserved { color: #98a2b3; font-size: 12px; white-space: nowrap; }.editor-actions :deep(.el-button) { margin: 0; }.draft-content { display: grid; gap: 13px; margin-top: 19px; }.draft-block { padding: 16px 17px; border: 1px solid #eaecf0; border-radius: 9px; }.draft-block>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.draft-block h3 { margin: 0; color: #344054; font-size: 14px; font-weight: 650; }.draft-block p { margin: 9px 0 0; color: #667085; font-size: 14px; line-height: 1.7; }.draft-block :deep(.el-textarea) { display: block; margin-top: 10px; }.block-menu { width: 30px; height: 27px; border: 1px solid #eaecf0; border-radius: 6px; color: #667085; background: #fff; cursor: pointer; font: inherit; font-weight: 700; line-height: 1; }.block-menu:hover { color: #1677ff; background: #f8fbff; }.block-loading { display: block; margin-top: 8px; color: #1677ff; font-size: 12px; }.mock-table { margin-top: 13px; overflow: hidden; border: 1px solid #e6eef8; border-radius: 7px; color: #667085; font-size: 12px; }.mock-table div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }.mock-table div+div { border-top: 1px solid #e6eef8; }.mock-table span { padding: 8px; border-right: 1px solid #e6eef8; }.mock-table span:last-child { border-right: 0; }.mock-table div:first-child { color: #475467; background: #f8fbff; font-weight: 600; }.draft-footer { padding: 0; }
 .assistant-panel { padding: 0 2px 24px; }.assistant-intro { margin: 0 0 19px; color: #667085; font-size: 13px; line-height: 1.7; }.assistant-section { padding: 17px 0; border-top: 1px solid #edf0f3; }.assistant-section:first-of-type { border-top: 0; padding-top: 0; }.assistant-section>header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.assistant-section h3, .proposal-card h3 { margin: 0; color: #344054; font-size: 15px; font-weight: 650; }.check-result { margin-top: 13px; padding: 12px; border-radius: 8px; background: #f8fbff; }.check-result p { display: flex; align-items: center; justify-content: space-between; margin: 7px 0; color: #667085; font-size: 13px; }.check-result strong { color: #438566; font-weight: 600; }.check-result em { color: #b7791f; font-style: normal; }.check-result blockquote { margin: 13px 0 0; padding: 10px 11px; border-left: 2px solid #9cc5f6; color: #475467; background: #fff; font-size: 13px; line-height: 1.65; }.assistant-suggestion { padding: 12px 0; border-bottom: 1px solid #edf0f3; }.assistant-suggestion p { margin: 0; color: #475467; font-size: 13px; line-height: 1.6; }.assistant-suggestion>div { display: flex; align-items: center; gap: 5px; margin-top: 5px; }.assistant-suggestion>div span { color: #98a2b3; font-size: 12px; }.assistant-suggestion.proposed>div span, .assistant-suggestion.applied>div span { color: #4774a8; }.assistant-section :deep(.el-textarea) { margin-top: 12px; }.request-button { margin: 10px 0 0; }.proposal-card { margin-top: 6px; padding: 16px; border: 1px solid #dbe8f8; border-radius: 10px; background: #fbfdff; }.proposal-card h3 { margin-top: 5px; }.proposal-card>div { margin-top: 14px; }.proposal-card strong { color: #475467; font-size: 12px; }.proposal-card p { margin: 6px 0 0; color: #667085; font-size: 13px; line-height: 1.65; }.proposal-card>div:last-of-type { padding: 11px; border-radius: 7px; background: #edf5ff; }.proposal-card footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }.proposal-card footer :deep(.el-button) { margin: 0; }
+.draft-viewer { display: grid; gap: 20px; padding: 0 2px 22px; }.draft-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }.draft-summary div { padding: 12px; border: 1px solid #e6edf6; border-radius: 9px; background: #f7faff; }.draft-summary span, .draft-summary strong { display: block; }.draft-summary span { color: #8190a5; font-size: 11px; }.draft-summary strong { margin-top: 5px; color: #344054; font-size: 13px; font-weight: 600; }.draft-viewer-section { padding-top: 18px; border-top: 1px solid #edf0f4; }.draft-viewer-section:first-of-type { padding-top: 0; border-top: 0; }.draft-viewer-section h3 { margin: 0 0 12px; color: #1d2939; font-size: 15px; font-weight: 650; }.draft-type-list { display: flex; flex-wrap: wrap; gap: 8px; }.draft-type-list span { padding: 6px 10px; border: 1px solid #dce9f7; border-radius: 7px; color: #35658f; background: #f2f7fd; font-size: 12px; }.draft-type-list p, .draft-empty { margin: 0; color: #98a2b3; font-size: 13px; }.draft-setting-list { margin: 0; }.draft-setting-list>div { display: grid; grid-template-columns: minmax(120px, 38%) minmax(0, 1fr); gap: 14px; padding: 9px 0; border-bottom: 1px solid #f0f2f5; }.draft-setting-list>div:last-child { border-bottom: 0; }.draft-setting-list dt { color: #667085; font-size: 13px; }.draft-setting-list dd { margin: 0; color: #344054; font-size: 13px; text-align: right; overflow-wrap: anywhere; }.draft-specific-list { display: grid; gap: 12px; }.draft-specific-list article { padding: 14px; border: 1px solid #e6edf6; border-radius: 10px; background: #fbfcfe; }.draft-specific-list h4 { margin: 0 0 7px; color: #344054; font-size: 13px; font-weight: 650; }.draft-viewer-actions { display: flex; justify-content: flex-end; gap: 8px; }.draft-viewer-actions :deep(.el-button) { margin: 0; }
 @media (max-width: 1100px) { .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.common-settings-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }@media (max-width: 900px) { .mode-grid { grid-template-columns: 1fr; }.mode-card { min-height: 240px; }.resource-settings-layout, .draft-workspace { grid-template-columns: 1fr; }.selected-resource-list, .draft-resource-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }.selected-resource-list h2, .draft-resource-list h2 { grid-column: 1 / -1; } }@media (max-width: 620px) { .page-header, .current-course-card header, .selection-header, .common-settings-card header, .draft-header, .editor-header { flex-direction: column; gap: 16px; }.save-area { padding-top: 0; }.mode-section, .resource-selection-card, .current-course-card, .common-settings-card, .exclusive-settings-card, .draft-header, .draft-editor { padding: 21px; }.resource-grid, .common-settings-form, .exclusive-form { grid-template-columns: 1fr; }.selection-actions, .settings-actions { gap: 12px; }.selection-actions :deep(.el-button), .settings-actions :deep(.el-button) { flex: 1; margin: 0; }.settings-actions>div { width: 100%; flex-wrap: wrap; }.selected-resource-list, .draft-resource-list { grid-template-columns: 1fr; }.editor-actions { width: 100%; flex-wrap: wrap; }.assistant-reserved { width: 100%; white-space: normal; }.mock-table { overflow-x: auto; }.mock-table div { min-width: 420px; } }
+
+/* Step 1: calm, distinctive resource-selection cards. */
+.generate-workspace { gap: 20px; }
+.current-course-card { border-color: #e4eaf2; box-shadow: 0 2px 8px rgb(30 64 104 / 3%); }
+.course-meta { gap: 8px; margin-top: 16px; }
+.course-meta span { padding: 5px 10px; border: 1px solid #e1ecf8; border-radius: 7px; color: #466789; background: #f4f8fc; font-weight: 550; }
+.resource-selection-card { padding: 28px; border-color: #e4eaf2; box-shadow: 0 3px 12px rgb(30 64 104 / 4%); }
+.selection-header h2 { color: #172033; font-size: 18px; letter-spacing: -.01em; }
+.selection-header p { max-width: 680px; margin-top: 9px; color: #64748b; font-size: 14px; line-height: 1.65; }
+.batch-actions { align-items: center; gap: 10px; }
+.batch-actions>span { width: 1px; height: 13px; background: #dce4ee; }
+.batch-actions :deep(.el-button) { padding: 4px 2px; color: #475569; font-size: 13px; font-weight: 550; }
+.batch-actions :deep(.el-button:hover) { color: #2563eb; }
+.resource-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 25px; }
+.resource-card {
+  --card-bg: #f3f8ff;
+  --card-bg-hover: #f7faff;
+  --icon-bg: #4f8de8;
+  position: relative;
+  min-height: 166px;
+  padding: 20px;
+  overflow: hidden;
+  border-color: rgb(148 163 184 / 26%);
+  border-radius: 12px;
+  background: var(--card-bg);
+  box-shadow: none;
+  outline: none;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+.resource-card::after {
+  position: absolute;
+  z-index: 0;
+  top: 14px;
+  right: 15px;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background-image: radial-gradient(circle, currentColor 1px, transparent 1.2px);
+  background-size: 8px 8px;
+  color: var(--icon-bg);
+  content: '';
+  opacity: .07;
+  pointer-events: none;
+}
+.resource-card>* { position: relative; z-index: 1; }
+.resource-card:hover { transform: translateY(-2px); border-color: rgb(91 126 166 / 42%); background: var(--card-bg-hover); box-shadow: 0 7px 18px rgb(30 64 104 / 7%); }
+.resource-card:focus-visible { border-color: #60a5fa; box-shadow: 0 0 0 3px rgb(59 130 246 / 13%); }
+.resource-card.selected { border: 1.5px solid #3b82f6; background: var(--card-bg); box-shadow: 0 4px 12px rgb(59 130 246 / 8%); }
+.resource-card.selected:hover { background: var(--card-bg-hover); }
+.resource-card header { min-height: 38px; }
+.resource-icon { width: 38px; height: 38px; border-radius: 9px; color: #fff; background: var(--icon-bg); box-shadow: 0 3px 8px color-mix(in srgb, var(--icon-bg) 22%, transparent); font-size: 17px; }
+.resource-card.selected .resource-icon { box-shadow: 0 4px 10px color-mix(in srgb, var(--icon-bg) 28%, transparent); }
+.resource-card h3 { margin-top: 18px; color: #172033; font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.resource-card p { max-width: 95%; margin-top: 8px; color: #64748b; font-size: 13px; line-height: 1.7; }
+.resource-card :deep(.el-checkbox) { height: 22px; }
+.resource-card :deep(.el-checkbox__inner) { width: 17px; height: 17px; border-color: #cbd5e1; border-radius: 5px; background: rgb(255 255 255 / 92%); }
+.resource-card :deep(.el-checkbox__input:hover .el-checkbox__inner) { border-color: #3b82f6; }
+.resource-card :deep(.el-checkbox__input.is-checked .el-checkbox__inner) { border-color: #3b82f6; background: #3b82f6; }
+.resource-card--ppt { --card-bg: #f1f7ff; --card-bg-hover: #f7faff; --icon-bg: #4c86dc; }
+.resource-card--teacher-guide { --card-bg: #f1f9f4; --card-bg-hover: #f6fbf8; --icon-bg: #4f9b72; }
+.resource-card--worksheet { --card-bg: #f7f3ff; --card-bg-hover: #faf8ff; --icon-bg: #8069ce; }
+.resource-card--task-card { --card-bg: #eff9fa; --card-bg-hover: #f5fbfc; --icon-bg: #3795a0; }
+.resource-card--ai-case { --card-bg: #eef9f6; --card-bg-hover: #f5fbf9; --icon-bg: #3e9a83; }
+.resource-card--discussion { --card-bg: #f1f7fc; --card-bg-hover: #f7fafd; --icon-bg: #4d86ba; }
+.resource-card--assessment { --card-bg: #fff8eb; --card-bg-hover: #fffbf3; --icon-bg: #c58b3b; }
+.resource-card--reflection { --card-bg: #faf2f8; --card-bg-hover: #fcf7fb; --icon-bg: #a86898; }
+.selection-actions { margin-top: 27px; padding-top: 20px; }
+.selection-actions :deep(.el-button--primary) { min-width: 172px; border-color: #2563eb; background: #2563eb; }
+.selection-actions :deep(.el-button--primary:hover) { border-color: #1d4ed8; background: #1d4ed8; }
+.selection-actions :deep(.el-button--primary.is-disabled) { border-color: #a8c7f5; background: #a8c7f5; opacity: .72; }
+@media (max-width: 1199px) and (min-width: 768px) { .resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 767px) {
+  .resource-selection-card { padding: 21px; }
+  .resource-grid { grid-template-columns: 1fr; }
+  .resource-card { min-height: 152px; }
+  .draft-summary { grid-template-columns: 1fr; }
+  .save-area { align-items: flex-start; flex-direction: column; }
+}
 </style>

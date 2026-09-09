@@ -328,7 +328,7 @@ async function generateBlueprint() {
   if (isGeneratingBlueprint.value) return
   isGeneratingBlueprint.value = true
   isPreparingCourse.value = true
-  try { await courseDesignApi.generateBlueprint(projectId); await reloadDesign(); ElMessage.success('课程蓝图已生成') } catch (error) { showApiError(error) } finally { isPreparingCourse.value = false; isGeneratingBlueprint.value = false }
+  try { await courseDesignApi.generateBlueprint(projectId, contextForm.duration); await reloadDesign(); ElMessage.success('课程蓝图已生成') } catch (error) { showApiError(error) } finally { isPreparingCourse.value = false; isGeneratingBlueprint.value = false }
 }
 async function confirmBlueprint() {
   if (isRunningQualityCheck.value) return
@@ -355,7 +355,7 @@ async function transformStage(stage: BlueprintStage, action: string) {
 function regenerateWholeBlueprint() {
   regeneratePromptVisible.value = false
   isPreparingCourse.value = true
-  courseDesignApi.generateBlueprint(projectId).then(reloadDesign).catch(showApiError).finally(() => { isPreparingCourse.value = false })
+  courseDesignApi.generateBlueprint(projectId, contextForm.duration).then(reloadDesign).catch(showApiError).finally(() => { isPreparingCourse.value = false })
 }
 async function applySuggestion(checkId: number) {
   try { await courseDesignApi.applyQualitySuggestion(projectId, checkId); await reloadDesign(); const { data } = await courseDesignApi.getQualityCheck(projectId); qualityResult.value = data.data } catch (error) { showApiError(error) }

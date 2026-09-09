@@ -6,7 +6,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.research.base import ResearchAgentProvider
-from app.agents.research.errors import ResearchAgentContractError, ResearchAgentError
+from app.agents.research.errors import ResearchAgentError
 from app.agents.research.context_builder import (
     ConversationContextBuilder,
     RECENT_MESSAGE_LIMIT,
@@ -62,6 +62,18 @@ class ResearchChatNotFoundError(LookupError):
 
 
 class ResearchTextNotReadyError(RuntimeError):
+    pass
+
+
+class ResearchKnowledgeIndexNotReadyError(RuntimeError):
+    def __init__(self, index_status: str) -> None:
+        self.index_status = index_status
+        super().__init__(
+            f"Research resource knowledge index is not ready (status={index_status})"
+        )
+
+
+class ResearchRetrievalScopeError(RuntimeError):
     pass
 
 
@@ -153,14 +165,20 @@ class ResearchChatService:
             raise ResearchTextNotReadyError(
                 "Research resource text must be extracted before creating a chat session"
             )
+        if resource.index_status != "ready":
+            raise ResearchKnowledgeIndexNotReadyError(resource.index_status)
 
         source_metadata = EvidenceReadinessService.source_metadata_from_resource(
             resource
         )
 
         analysis_record = self.repository.get_latest_analysis(resource_id=resource.id)
+        should_generate = (
+            analysis_record is None
+            or getattr(analysis_record, "generation_status", "READY") == "FAILED"
+        )
         analysis_failed = False
-        if analysis_record is None:
+        if should_generate:
             analysis_stage = "evidence_retrieval"
             try:
                 analysis_evidence, evidence_sources, retrieved_count = (
@@ -191,13 +209,7 @@ class ResearchChatService:
                     "Research paper analysis completed project_id=%s file_id=%s provider=%s",
                     project_id, resource.id, provider_response.provider,
                 )
-            except (
-                ResearchAgentError,
-                EmbeddingError,
-                HybridRetrievalError,
-                VectorStoreError,
-                BM25StoreError,
-            ) as exc:
+            except ResearchAgentError as exc:
                 analysis_failed = True
                 analysis = ResearchAnalysisStateService.with_readiness(
                     self._empty_project_analysis(), source_metadata
@@ -206,12 +218,20 @@ class ResearchChatService:
                     "Research paper structured analysis unavailable project_id=%s file_id=%s "
                     "exception_type=%s stage=%s",
                     project_id, resource.id, type(exc).__name__,
-                    (
-                        "contract_validation"
-                        if isinstance(exc, ResearchAgentContractError)
-                        else analysis_stage
-                    ),
+                    "contract_validation",
                 )
+            except (
+                EmbeddingError,
+                HybridRetrievalError,
+                VectorStoreError,
+                BM25StoreError,
+            ) as exc:
+                logger.exception(
+                    "Research analysis retrieval failed project_id=%s file_id=%s "
+                    "exception_type=%s stage=%s",
+                    project_id, resource.id, type(exc).__name__, analysis_stage,
+                )
+                raise
         else:
             analysis = self._validated_analysis(
                 analysis_record,
@@ -220,19 +240,23 @@ class ResearchChatService:
 
         title = (request.title or f"与 {resource.original_filename} 的研究对话")[:255]
         try:
-            if analysis_record is None:
-                analysis_record = self.repository.create_analysis(
-                    resource_id=resource.id,
-                    project_id=project_id,
-                    version=1,
-                    structured_data=analysis.model_dump(
-                        mode="json",
-                        by_alias=False,
-                    ),
-                    field_sources=(
-                        ResearchAnalysisStateService.initial_mock_sources()
-                    ),
-                )
+            if should_generate:
+                structured_data = analysis.model_dump(mode="json", by_alias=False)
+                if analysis_failed and analysis_record is not None:
+                    # Retrying an already failed generation must not grow an
+                    # unlimited chain of empty analysis versions.
+                    self.repository.mark_analysis_generation_failed(
+                        analysis_record, structured_data=structured_data
+                    )
+                else:
+                    analysis_record = self.repository.create_analysis(
+                        resource_id=resource.id,
+                        project_id=project_id,
+                        version=(analysis_record.version + 1 if analysis_record else 1),
+                        structured_data=structured_data,
+                        field_sources=ResearchAnalysisStateService.initial_mock_sources(),
+                        generation_status="FAILED" if analysis_failed else "READY",
+                    )
             session = self.repository.create_session(
                 user_id=current_user_id,
                 project_id=project_id,
@@ -334,7 +358,10 @@ class ResearchChatService:
             source_metadata = EvidenceReadinessService.source_metadata_from_knowledge_base()
             analysis_record = self._ensure_project_analysis(session)
             analysis = self._validated_analysis(analysis_record, source_metadata)
-            return self._session_response(session, analysis, source_metadata)
+            return self._session_response(
+                session, analysis, source_metadata,
+                generation_status=analysis_record.generation_status,
+            )
         resource = self.repository.get_resource(resource_id=session.resource_id)
         if resource is None:
             raise ResearchChatNotFoundError("Research resource was not found")
@@ -348,7 +375,10 @@ class ResearchChatService:
             session=session,
             analysis_record=analysis_record,
         )
-        return self._session_response(session, analysis, source_metadata)
+        return self._session_response(
+            session, analysis, source_metadata,
+            generation_status=analysis_record.generation_status,
+        )
 
     def get_latest_project_session(
         self, *, current_user_id: int, project_id: int
@@ -505,7 +535,7 @@ class ResearchChatService:
             role="ASSISTANT",
             sequence_no=self.repository.next_sequence_no(session_id=session.id),
             content=provider_response.data.message,
-            metadata=self._message_metadata(session, delivery_status="COMPLETED"),
+            metadata=self._assistant_message_metadata(session, chat_request),
         )
         self._mark_user_message_completed(user_message, session=session)
         latest_analysis_record = current_analysis_record
@@ -635,14 +665,13 @@ class ResearchChatService:
 
         try:
             full_response: list[str] = []
-            async for chunk in self.provider.stream_chat(
-                await self._chat_request(
-                    current_user_id=current_user_id,
-                    session=session,
-                    content=content,
-                    analysis=analysis,
-                )
-            ):
+            chat_request = await self._chat_request(
+                current_user_id=current_user_id,
+                session=session,
+                content=content,
+                analysis=analysis,
+            )
+            async for chunk in self.provider.stream_chat(chat_request):
                 full_response.append(chunk)
                 yield chunk
 
@@ -662,7 +691,7 @@ class ResearchChatService:
             role="ASSISTANT",
             sequence_no=self.repository.next_sequence_no(session_id=session.id),
             content=assistant_content,
-            metadata=self._message_metadata(session, delivery_status="COMPLETED"),
+            metadata=self._assistant_message_metadata(session, chat_request),
         )
         self._mark_user_message_completed(user_message, session=session)
         self.repository.touch_session(session)
@@ -728,7 +757,7 @@ class ResearchChatService:
             role="ASSISTANT",
             sequence_no=self.repository.next_sequence_no(session_id=session.id),
             content=provider_response.data.message,
-            metadata=self._message_metadata(session, delivery_status="COMPLETED"),
+            metadata=self._assistant_message_metadata(session, chat_request),
         )
         self._mark_user_message_completed(user_message, session=session)
         self.repository.touch_session(session)
@@ -807,14 +836,13 @@ class ResearchChatService:
 
         try:
             full_response: list[str] = []
-            async for chunk in self.provider.stream_chat(
-                await self._chat_request(
-                    current_user_id=current_user_id,
-                    session=session,
-                    content=content,
-                    analysis=None,
-                )
-            ):
+            chat_request = await self._chat_request(
+                current_user_id=current_user_id,
+                session=session,
+                content=content,
+                analysis=None,
+            )
+            async for chunk in self.provider.stream_chat(chat_request):
                 full_response.append(chunk)
                 yield chunk
 
@@ -836,7 +864,7 @@ class ResearchChatService:
             role="ASSISTANT",
             sequence_no=self.repository.next_sequence_no(session_id=session.id),
             content=assistant_content,
-            metadata=self._message_metadata(session, delivery_status="COMPLETED"),
+            metadata=self._assistant_message_metadata(session, chat_request),
         )
         self._mark_user_message_completed(user_message, session=session)
         self.repository.touch_session(session)
@@ -870,22 +898,60 @@ class ResearchChatService:
             messages=history,
             current_question=content,
         )
+        retrieval_scope = "RESOURCE" if session.resource_id is not None else "PROJECT"
+        retrieval_status = "READY"
         try:
-            knowledge_sources = await self.project_knowledge.search(
-                project_id=session.project_id,
-                query=content,
-                top_k=settings.knowledge_base_retrieval_top_k,
+            if session.resource_id is not None:
+                knowledge_sources = await self.project_knowledge.search_resource(
+                    project_id=session.project_id,
+                    file_id=session.resource_id,
+                    query=content,
+                    top_k=settings.knowledge_base_retrieval_top_k,
+                )
+            else:
+                knowledge_sources = await self.project_knowledge.search(
+                    project_id=session.project_id,
+                    query=content,
+                    top_k=settings.knowledge_base_retrieval_top_k,
+                )
+            retrieval_status = "READY" if knowledge_sources else "EMPTY"
+            logger.info(
+                "Research knowledge retrieved scope=%s project_id=%s resource_id=%s "
+                "session_id=%s source_file_ids=%s source_count=%s",
+                retrieval_scope, session.project_id, session.resource_id, session.id,
+                sorted({source.file_id for source in knowledge_sources}),
+                len(knowledge_sources),
             )
-        except Exception:
+        except Exception as exc:
             # Retrieval is an evidence enhancement. A missing/corrupt index or
             # transient embedding failure must not turn ordinary chat into 500.
             logger.warning(
-                "Project knowledge retrieval degraded project_id=%s session_id=%s",
+                "Research knowledge retrieval degraded scope=%s project_id=%s "
+                "resource_id=%s session_id=%s exception_type=%s",
+                retrieval_scope,
                 session.project_id,
+                session.resource_id,
                 session.id,
+                type(exc).__name__,
                 exc_info=True,
             )
             knowledge_sources = []
+            retrieval_status = "FAILED"
+        if session.resource_id is not None:
+            wrong_file_ids = sorted({
+                source.file_id
+                for source in knowledge_sources
+                if source.file_id != session.resource_id
+            })
+            if wrong_file_ids:
+                logger.error(
+                    "Cross-resource retrieval rejected project_id=%s session_id=%s "
+                    "expected_file_id=%s returned_file_ids=%s",
+                    session.project_id, session.id, session.resource_id, wrong_file_ids,
+                )
+                raise ResearchRetrievalScopeError(
+                    "Resource-scoped retrieval returned evidence from another paper"
+                )
         request_history = history
         if (
             request_history
@@ -902,6 +968,17 @@ class ResearchChatService:
             project_topic=project.topic,
             grade=project.grade,
             class_hours=project.class_hours,
+            student_level=getattr(project, "student_level", None),
+            student_experience=getattr(project, "student_experience", None),
+            class_size=getattr(project, "class_size", None),
+            lesson_minutes=getattr(project, "lesson_minutes", None),
+            ai_access_mode=getattr(project, "ai_access_mode", None),
+            devices=getattr(project, "devices_json", None) or [],
+            constraints=getattr(project, "constraints_json", None) or [],
+            additional_requirements=getattr(project, "additional_requirements", None),
+            context_diagnosis=getattr(project, "context_diagnosis_json", None),
+            retrieval_scope=retrieval_scope,
+            retrieval_status=retrieval_status,
             conversation_summary=session.conversation_summary,
             conversation_context=self._conversation_context(
                 conversation_messages=conversation_messages,
@@ -968,6 +1045,30 @@ class ResearchChatService:
             "projectId": session.project_id,
             "deliveryStatus": delivery_status,
         }
+
+    @classmethod
+    def _assistant_message_metadata(
+        cls, session: ResearchChatSession, request: ResearchChatRequest
+    ) -> dict[str, object]:
+        metadata = cls._message_metadata(session, delivery_status="COMPLETED")
+        metadata.update(
+            {
+                "retrievalScope": request.retrieval_scope,
+                "resourceId": session.resource_id,
+                "retrievalStatus": request.retrieval_status,
+                "retrievedSources": [
+                    {
+                        "fileId": source.file_id,
+                        "filename": source.filename,
+                        "chunkId": source.chunk_id,
+                        "chunkIndex": source.chunk_index,
+                        "score": source.score,
+                    }
+                    for source in request.project_knowledge_sources
+                ],
+            }
+        )
+        return metadata
 
     def _record_user_message_failure(
         self,
@@ -1126,6 +1227,8 @@ class ResearchChatService:
         session: ResearchChatSession,
         analysis: ResearchAnalysisResult | None,
         source_metadata: EvidenceSourceMetadata | None,
+        *,
+        generation_status: str | None,
     ) -> ResearchChatSessionResponse:
         messages = self.repository.list_messages(session_id=session.id)
         return ResearchChatSessionResponse(
@@ -1136,6 +1239,7 @@ class ResearchChatService:
             status=session.status,
             messages=[self._message_response(message) for message in messages],
             latest_analysis=analysis,
+            analysis_generation_status=generation_status,
             readiness=(
                 ResearchAnalysisStateService.readiness(analysis, source_metadata)
                 if analysis is not None

@@ -10,7 +10,7 @@ const sizeLabel = computed(() => {
 })
 const typeLabel = computed(() => (props.resource.fileName.toLowerCase().endsWith('.docx') ? 'DOCX' : 'PDF'))
 const stateLabel = computed(() => ({
-  UPLOADING: '正在上传…', UPLOADED: '上传完成', TEXT_EXTRACTING: '正在解析研究内容…', TEXT_EXTRACTED: '文本解析完成', ANALYZING: '正在形成研究解析…', ANALYZED: '研究解析完成', REVIEWED: '已完成教师确认', CARD_READY: '证据卡已就绪', FAILED: '解析失败',
+  UPLOADING: '正在上传…', UPLOADED: '上传完成', TEXT_EXTRACTING: '正在解析研究内容…', TEXT_EXTRACTED: '文本解析完成', INDEXING: '正在建立研究知识索引…', ANALYZING: '正在形成研究解析…', ANALYZED: '研究解析完成', REVIEWED: '已完成教师确认', CARD_READY: '证据卡已就绪', FAILED: '解析失败',
 }[props.resource.processingStatus]))
 </script>
 

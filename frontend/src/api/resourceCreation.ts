@@ -7,8 +7,10 @@ export const getResourceCreation = (projectId: number | string) => http.get<ApiE
 export const createResourceJob = (projectId: number | string, payload: Record<string, any>) => http.post<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs`, payload)
 export const updateResourceJob = (projectId: number | string, jobId: number, payload: Record<string, any>) => http.patch<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs/${jobId}`, payload)
 export const recommendResourceSettings = (projectId: number | string, jobId: number) => http.post<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs/${jobId}/recommend-settings`)
-export const generateResources = (projectId: number | string, jobId: number) => http.post<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs/${jobId}/generate`)
-export const regenerateResources = (projectId: number | string, jobId: number) => http.post<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs/${jobId}/regenerate`)
+// A job can make up to seven sequential structured-model calls. Do not inherit
+// the global 10-second timeout used by ordinary CRUD requests.
+export const generateResources = (projectId: number | string, jobId: number) => http.post<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs/${jobId}/generate`, undefined, { timeout: 600_000 })
+export const regenerateResources = (projectId: number | string, jobId: number) => http.post<ApiEnvelope<any>>(`${path(projectId)}/resource-creation/jobs/${jobId}/regenerate`, undefined, { timeout: 600_000 })
 export const getTeachingResource = (projectId: number | string, resourceId: number) => http.get<ApiEnvelope<any>>(`${path(projectId)}/teaching-resources/${resourceId}`)
 export const saveTeachingResourceVersion = (projectId: number | string, resourceId: number, payload: Record<string, any>) => http.post<ApiEnvelope<any>>(`${path(projectId)}/teaching-resources/${resourceId}/versions`, payload)
 export const transformTeachingResource = (projectId: number | string, resourceId: number, payload: Record<string, any>) => http.post<ApiEnvelope<any>>(`${path(projectId)}/teaching-resources/${resourceId}/transform`, payload)

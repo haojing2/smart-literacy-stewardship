@@ -42,7 +42,8 @@ export const generateAssessments = (projectId: number | string) => http.post(pro
 export const updateAssessment = (projectId: number | string, assessmentId: number, payload: Record<string, any>) => http.patch(projectPath(projectId) + '/assessments/' + assessmentId, payload)
 export const regenerateAssessment = (projectId: number | string, assessmentId: number) => http.post(projectPath(projectId) + '/assessments/' + assessmentId + '/regenerate', undefined, aiRequest)
 export const confirmAssessments = (projectId: number | string) => http.post(projectPath(projectId) + '/assessments/confirm')
-export const generateBlueprint = (projectId: number | string) => http.post(projectPath(projectId) + '/course-blueprint/generate', undefined, aiRequest)
+export const generateBlueprint = (projectId: number | string, lessonMinutes: number) =>
+  http.post(projectPath(projectId) + '/course-blueprint/generate', { lessonMinutes }, aiRequest)
 export const updateActivity = (projectId: number | string, activityId: number, payload: Record<string, any>) => http.patch(projectPath(projectId) + '/activities/' + activityId, payload)
 export const regenerateActivity = (projectId: number | string, activityId: number) => http.post(projectPath(projectId) + '/activities/' + activityId + '/regenerate', undefined, aiRequest)
 export const transformActivity = (projectId: number | string, activityId: number, action: string) => http.post(projectPath(projectId) + '/activities/' + activityId + '/transform', { action })

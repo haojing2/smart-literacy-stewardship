@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -29,11 +30,16 @@ from app.schemas.resource_creation import (
     ResourceSuggestionCreateRequest,
     ResourceSuggestionReviseRequest,
     ResourceTransformRequest,
-    TeachingResourceGenerationRequest,
     TeachingResourceGenerationResult,
     TeachingResourceVersionCreateRequest,
+    ResourceType,
 )
+from app.assistants.prompts.resource_creation import validate_generated_resource
+from app.services.resource_generation_context_service import ResourceGenerationContextService
 from app.services.project_service import ProjectNotFoundError
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResourceCreationJobNotFoundError(LookupError):
@@ -93,21 +99,25 @@ class ResourceCreationService:
     ) -> dict[str, object]:
         if payload.project_id != project_id:
             raise ValueError("Project ID does not match the request path")
-        job = self.repository.create_job(
-            current_user_id=current_user_id,
-            project_id=project_id,
-            mode=payload.mode,
-            selected_types_json=[item.value for item in payload.selected_types],
-            common_settings_json=payload.common_settings,
-            resource_settings_json=payload.resource_settings,
-        )
-        if job is None:
-            raise ProjectNotFoundError("Project was not found for the current user")
         try:
+            job = self.repository.create_job(
+                current_user_id=current_user_id,
+                project_id=project_id,
+                mode=payload.mode,
+                selected_types_json=[item.value for item in payload.selected_types],
+                common_settings_json=payload.common_settings,
+                resource_settings_json=payload.resource_settings,
+            )
+            if job is None:
+                raise ProjectNotFoundError("Project was not found for the current user")
             self.db.commit()
             self.db.refresh(job)
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
+            logger.exception(
+                "Resource job save failed operation=create exception_type=%s project_id=%s",
+                type(exc).__name__, project_id,
+            )
             raise
         return {"job": self._job_view(job)}
 
@@ -120,23 +130,27 @@ class ResourceCreationService:
         payload: ResourceCreationJobUpdateRequest,
     ) -> dict[str, object]:
         self._owned_project(current_user_id=current_user_id, project_id=project_id)
-        values = payload.model_dump(exclude_unset=True)
+        values = payload.model_dump(exclude_unset=True, by_alias=False)
         if "selected_types" in values:
             values["selected_types_json"] = [item.value for item in values.pop("selected_types")]
         if "common_settings" in values:
             values["common_settings_json"] = values.pop("common_settings")
         if "resource_settings" in values:
             values["resource_settings_json"] = values.pop("resource_settings")
-        job = self.repository.update_job(
-            job_id=job_id, current_user_id=current_user_id, values=values
-        )
-        if job is None or job.project_id != project_id:
-            raise ResourceCreationJobNotFoundError("Resource creation job was not found")
         try:
+            job = self.repository.update_job(
+                job_id=job_id, current_user_id=current_user_id, values=values
+            )
+            if job is None or job.project_id != project_id:
+                raise ResourceCreationJobNotFoundError("Resource creation job was not found")
             self.db.commit()
             self.db.refresh(job)
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
+            logger.exception(
+                "Resource job save failed operation=update exception_type=%s project_id=%s job_id=%s",
+                type(exc).__name__, project_id, job_id,
+            )
             raise
         return {"job": self._job_view(job)}
 
@@ -178,7 +192,6 @@ class ResourceCreationService:
     ) -> dict[str, object]:
         project = self._owned_project(current_user_id=current_user_id, project_id=project_id)
         job = self._owned_job(job_id=job_id, project_id=project_id, current_user_id=current_user_id)
-        basis = self._course_design_basis(project)
         selected_types = list(job.selected_types_json or [])
         if not selected_types:
             raise ValueError("At least one resource type must be selected")
@@ -192,14 +205,34 @@ class ResourceCreationService:
                 )
             }
             for resource_type in selected_types:
-                generated_result = TeachingResourceGenerationResult.model_validate(
-                    await provider.generate_teaching_resource(
-                        TeachingResourceGenerationRequest.model_validate(
-                            self._provider_request(project, basis, resource_type)
-                        )
-                    )
+                if ResourceType(resource_type) == ResourceType.PPT:
+                    # PPT is intentionally reserved for its dedicated model/API.
+                    continue
+                failure_stage = "prompt_build"
+                provider_request = ResourceGenerationContextService(self.db).build(
+                    project_id=project_id,
+                    current_user_id=current_user_id,
+                    resource_type=resource_type,
+                    common_settings=job.common_settings_json,
+                    resource_settings=job.resource_settings_json,
                 )
+                failure_stage = "provider_call"
+                provider_result = await provider.generate_teaching_resource(provider_request)
+                failure_stage = "schema_validation"
+                generated_result = TeachingResourceGenerationResult.model_validate(
+                    provider_result
+                )
+                validate_generated_resource(provider_request.resource_type, generated_result.content, provider_request)
+                generated_result.content.metadata.update({
+                    "resourceType": provider_request.resource_type.value,
+                    "provider": provider.provider_name,
+                    "projectId": project_id,
+                    "courseDesignBased": True,
+                    "researchEvidenceCount": len(provider_request.research_evidence),
+                    "generatedAt": datetime.now(timezone.utc).isoformat(),
+                })
                 content = generated_result.content.model_dump(mode="json", by_alias=True)
+                failure_stage = "database_save"
                 resource = existing.get(resource_type)
                 if resource is None:
                     resource = self.repository.create_resource(
@@ -207,7 +240,7 @@ class ResourceCreationService:
                         current_user_id=current_user_id,
                         resource_type=resource_type,
                         title=generated_result.title,
-                        settings_json=job.resource_settings_json,
+                        settings_json=provider_request.resource_settings,
                     )
                     if resource is None:
                         raise ResourceCreationJobNotFoundError("Resource creation job was not found")
@@ -240,8 +273,13 @@ class ResourceCreationService:
             for item in generated:
                 self.db.refresh(item)
             self.db.refresh(job)
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
+            logger.exception(
+                "Teaching resource generation failed stage=%s exception_type=%s project_id=%s job_id=%s resource_type=%s",
+                locals().get("failure_stage", "database_save"), type(exc).__name__, project_id, job_id,
+                locals().get("resource_type"),
+            )
             raise
         return {
             "job": self._job_view(job),
