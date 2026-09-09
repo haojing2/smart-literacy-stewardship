@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 from app.schemas.evidence import EvidenceReadinessResult
@@ -21,9 +21,17 @@ class ResearchAssistantSchema(BaseModel):
 
 class ResearchAnalysisRequest(ResearchAssistantSchema):
     resource_id: int = Field(gt=0)
-    extracted_text: str = Field(min_length=1)
+    analysis_evidence: str | None = Field(default=None, min_length=1)
+    # Compatibility-only input for historical callers; new analysis uses bounded evidence.
+    extracted_text: str | None = Field(default=None, min_length=1)
     project_title: str | None = None
     project_topic: str | None = None
+
+    @model_validator(mode="after")
+    def require_analysis_evidence(self):
+        if not self.analysis_evidence and not self.extracted_text:
+            raise ValueError("analysis_evidence is required")
+        return self
 
 
 class ResearchAnalysisResult(ResearchAssistantSchema):

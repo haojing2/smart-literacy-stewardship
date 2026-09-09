@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,18 @@ class Settings(BaseSettings):
     app_name: str = "Smart Literacy Stewardship"
     app_version: str = "2.0.0"
     debug: bool = True
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def normalize_debug_environment_value(cls, value: object) -> object:
+        """Tolerate common host build-mode values that collide with DEBUG."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"release", "production", "prod"}:
+                return False
+            if normalized in {"debug", "development", "dev"}:
+                return True
+        return value
 
     mysql_host: str
     mysql_port: int = 3306
@@ -35,12 +48,20 @@ class Settings(BaseSettings):
     embedding_base_url: str | None = None
     embedding_model: str = "text-embedding-3-small"
     embedding_timeout_seconds: float = 60.0
+    aliyun_embedding_provider: str | None = None
+    aliyun_embedding_api_key: str | None = None
+    aliyun_embedding_url: str | None = None
+    aliyun_embedding_model: str = "qwen3.7-text-embedding-flash"
+    aliyun_embedding_dimension: int = 1024
+    aliyun_embedding_batch_size: int = 25
+    aliyun_embedding_timeout_seconds: float = 60.0
     xfyun_embedding_app_id: str | None = None
     xfyun_embedding_api_key: str | None = None
     xfyun_embedding_api_secret: str | None = None
     xfyun_embedding_url: str = "https://emb-cn-huabei-1.xf-yun.com/"
     xfyun_embedding_dimension: int = 2560
     xfyun_embedding_max_concurrency: int = 4
+    xfyun_embedding_max_payload_bytes: int = 2048
     xfyun_embedding_uid: str | None = None
 
     llm_provider: str = "mock"
@@ -59,6 +80,8 @@ class Settings(BaseSettings):
     research_agent_url: str | None = None
     research_agent_domain: str = "generalv3.5"
     research_agent_timeout_seconds: float = 120.0
+    research_analysis_max_chunks: int = 18
+    research_analysis_max_context_chars: int = 24000
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

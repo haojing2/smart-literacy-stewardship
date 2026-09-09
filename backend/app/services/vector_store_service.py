@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from app.services.chunk_service import MarkdownChunk
 from app.services.knowledge_base_path_service import KnowledgeBasePathService
+
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStoreError(RuntimeError):
@@ -32,7 +36,10 @@ class ProjectVectorIndex:
     chunks: list[MarkdownChunk]
 
     def search(
-        self, query_embedding: list[float], top_k: int
+        self,
+        query_embedding: list[float],
+        top_k: int,
+        allowed_file_ids: set[int] | None = None,
     ) -> list[VectorSearchResult]:
         if not isinstance(top_k, int) or top_k <= 0:
             raise VectorStoreError("top_k must be a positive integer")
@@ -42,10 +49,16 @@ class ProjectVectorIndex:
                 "Please rebuild the project knowledge index."
             )
         vector = _normalize_vectors([query_embedding])
-        scores, ids = self.index.search(vector, min(top_k, len(self.chunks)))
+        candidate_count = len(self.chunks) if allowed_file_ids is not None else top_k
+        scores, ids = self.index.search(vector, min(candidate_count, len(self.chunks)))
         results: list[VectorSearchResult] = []
         for score, vector_id in zip(scores[0], ids[0], strict=True):
             if vector_id < 0:
+                continue
+            if (
+                allowed_file_ids is not None
+                and self.chunks[int(vector_id)].file_id not in allowed_file_ids
+            ):
                 continue
             results.append(
                 VectorSearchResult(
@@ -53,6 +66,8 @@ class ProjectVectorIndex:
                     score=float(score),
                 )
             )
+            if len(results) >= top_k:
+                break
         return results
 
 
@@ -110,6 +125,12 @@ class VectorStoreService:
         index.add(merged_vectors)
         project_index = ProjectVectorIndex(index=index, chunks=merged_chunks)
         self._save_index(project_id, project_index)
+        logger.info(
+            "FAISS index created project_id=%s dimension=%s vectors=%s",
+            project_id,
+            int(index.d),
+            int(index.ntotal),
+        )
         return project_index
 
     def load_index(self, project_id: int) -> ProjectVectorIndex:
@@ -135,8 +156,11 @@ class VectorStoreService:
         project_id: int,
         query_embedding: list[float],
         top_k: int,
+        allowed_file_ids: set[int] | None = None,
     ) -> list[VectorSearchResult]:
-        return self.load_index(project_id).search(query_embedding, top_k)
+        return self.load_index(project_id).search(
+            query_embedding, top_k, allowed_file_ids=allowed_file_ids
+        )
 
     def _save_index(self, project_id: int, project_index: ProjectVectorIndex) -> None:
         index_path = self._paths.faiss_index_file(project_id)

@@ -8,7 +8,15 @@ from app.schemas.research_assistant import (
 )
 
 def build_research_analysis_messages(request: ResearchAnalysisRequest) -> list[dict[str, str]]:
-    return build_json_messages("Extract only facts supported by extractedText; sourceExcerpt must be a verbatim substring of extractedText; do not decide evidenceReady.", request, ResearchAnalysisResult)
+    return build_json_messages(
+        "Extract only facts supported by analysisEvidence. Missing list fields must be []; "
+        "missing nullable fields must be null. Use only resultSchema camelCase keys; fields "
+        "such as participants, method, and sampleSize are forbidden. sourceExcerpt must be "
+        "a verbatim substring of analysisEvidence. Always return evidenceReady=false; the "
+        "application decides readiness. Return JSON only.",
+        request,
+        ResearchAnalysisResult,
+    )
 
 def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str, str]]:
     return _research_chat_context_messages(

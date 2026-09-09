@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import TypeVar
 
@@ -33,6 +34,9 @@ from app.schemas.research_assistant import (
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+logger = logging.getLogger(__name__)
+
+
 class SparkResearchAgent(ResearchAgentProvider):
     """研教智联 adapter for the Spark Assistant WebSocket API."""
 
@@ -53,7 +57,9 @@ class SparkResearchAgent(ResearchAgentProvider):
         result = result.model_copy(update={"evidence_ready": False})
         if result.source_excerpt:
             normalized_excerpt = self._normalize_source_text(result.source_excerpt)
-            normalized_document = self._normalize_source_text(request.extracted_text)
+            normalized_document = self._normalize_source_text(
+                request.analysis_evidence or request.extracted_text or ""
+            )
             if normalized_excerpt not in normalized_document:
                 # Keep the useful structured analysis but never persist an
                 # excerpt that cannot be traced back to the extracted paper.
@@ -114,32 +120,80 @@ class SparkResearchAgent(ResearchAgentProvider):
         result_type: type[ModelT],
     ) -> ModelT:
         assistant_messages = self._assistant_messages(messages)
+        content = await self._client.generate(assistant_messages)
         try:
-            content = await self._client.generate(assistant_messages)
             payload = SparkResearchAgentClient.extract_json_object(
                 content
             )
             return result_type.model_validate(payload, extra="forbid")
-        except (ResearchAgentParseError, ValidationError):
+        except (ResearchAgentParseError, ValidationError) as initial_error:
+            self._log_contract_failure(
+                phase="initial", result_type=result_type,
+                content=content, error=initial_error,
+            )
             repaired_messages = [
                 *assistant_messages,
                 {
                     "role": "user",
-                    "content": (
-                        "上一条回复未满足 JSON 输出契约。请仅返回一个完整 JSON 对象，"
-                        "严格符合任务中的 resultSchema，不要 Markdown 或解释。"
-                    ),
+                    "content": self._repair_instruction(initial_error),
                 },
             ]
+            repaired_content = await self._client.generate(repaired_messages)
             try:
                 repaired = SparkResearchAgentClient.extract_json_object(
-                    await self._client.generate(repaired_messages)
+                    repaired_content
                 )
                 return result_type.model_validate(repaired, extra="forbid")
             except (ResearchAgentParseError, ValidationError) as exc:
+                self._log_contract_failure(
+                    phase="repair", result_type=result_type,
+                    content=repaired_content, error=exc,
+                )
                 raise ResearchAgentContractError(
                     "Research Agent JSON violates the required result contract"
                 ) from exc
+
+    @staticmethod
+    def _validation_errors(error: ValidationError) -> list[dict[str, object]]:
+        return [
+            {"loc": list(item["loc"]), "type": item["type"], "message": item["msg"]}
+            for item in error.errors(include_url=False, include_input=False)
+        ]
+
+    @classmethod
+    def _repair_instruction(cls, error: Exception) -> str:
+        if isinstance(error, ValidationError):
+            details = "\n".join(
+                f"- {'.'.join(map(str, item['loc']))}: {item['message']} ({item['type']})"
+                for item in cls._validation_errors(error)
+            )
+        else:
+            details = f"- JSON parse error: {error}"
+        return (
+            "上一条 JSON 未通过验证。\n具体错误：\n"
+            f"{details}\n请重新返回完整 JSON。只能使用 resultSchema 中允许的字段。"
+            "不要 Markdown，不要解释。"
+        )
+
+    @classmethod
+    def _log_contract_failure(
+        cls, *, phase: str, result_type: type[BaseModel], content: str,
+        error: Exception,
+    ) -> None:
+        if isinstance(error, ValidationError):
+            logger.warning(
+                "Research Agent contract validation failed phase=%s result_type=%s "
+                "response_chars=%s error_type=%s validation_errors=%s",
+                phase, result_type.__name__, len(content), type(error).__name__,
+                cls._validation_errors(error),
+            )
+        else:
+            logger.warning(
+                "Research Agent JSON parse failed phase=%s result_type=%s "
+                "response_chars=%s error_type=%s content_prefix=%r",
+                phase, result_type.__name__, len(content), type(error).__name__,
+                content[:400],
+            )
 
     @staticmethod
     def _assistant_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:

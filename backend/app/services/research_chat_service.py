@@ -6,6 +6,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.research.base import ResearchAgentProvider
+from app.agents.research.errors import ResearchAgentContractError, ResearchAgentError
 from app.agents.research.context_builder import (
     ConversationContextBuilder,
     RECENT_MESSAGE_LIMIT,
@@ -31,7 +32,14 @@ from app.services.research_analysis_state_service import (
 )
 from app.services.evidence_readiness_service import EvidenceReadinessService
 from app.services.evidence_card_draft_service import EvidenceCardDraftService
-from app.services.project_knowledge_service import ProjectKnowledgeService
+from app.services.embedding_service import EmbeddingError
+from app.services.bm25_store_service import BM25StoreError
+from app.services.hybrid_retrieval_service import HybridRetrievalError
+from app.services.project_knowledge_service import (
+    ProjectKnowledgeService,
+    ProjectKnowledgeSource,
+)
+from app.services.vector_store_service import VectorStoreError
 from app.core.config import settings
 
 
@@ -39,6 +47,14 @@ logger = logging.getLogger(__name__)
 # Keep ordinary short conversations verbatim.  A rolling summary starts only
 # once there are more than twenty meaningful user/assistant turns.
 SUMMARY_TRIGGER_MESSAGE_COUNT = 20
+RESEARCH_ANALYSIS_QUERIES = (
+    "participants sample learners students research subjects population",
+    "research purpose research question topic objective",
+    "intervention teaching strategy procedure duration treatment implementation",
+    "assessment measure instrument questionnaire test scale rubric",
+    "results findings significant effect learning outcome",
+    "limitations implications discussion teaching implications",
+)
 
 
 class ResearchChatNotFoundError(LookupError):
@@ -143,19 +159,59 @@ class ResearchChatService:
         )
 
         analysis_record = self.repository.get_latest_analysis(resource_id=resource.id)
+        analysis_failed = False
         if analysis_record is None:
-            provider_response = await self.provider.analyze_research(
-                ResearchAnalysisRequest(
-                    resource_id=resource.id,
-                    extracted_text=resource.extracted_text,
-                    project_title=project.title if project else None,
-                    project_topic=project.topic if project else None,
+            analysis_stage = "evidence_retrieval"
+            try:
+                analysis_evidence, evidence_sources, retrieved_count = (
+                    await self._prepare_analysis_evidence(
+                        project_id=project_id, file_id=resource.id
+                    )
                 )
-            )
-            analysis = ResearchAnalysisStateService.with_readiness(
-                provider_response.data,
-                source_metadata,
-            )
+                logger.info(
+                    "Research analysis evidence prepared project_id=%s file_id=%s "
+                    "retrieved_chunks=%s chunks=%s context_chars=%s",
+                    project_id, resource.id, retrieved_count,
+                    len(evidence_sources), len(analysis_evidence),
+                )
+                analysis_stage = "contract_validation"
+                provider_response = await self.provider.analyze_research(
+                    ResearchAnalysisRequest(
+                        resource_id=resource.id,
+                        analysis_evidence=analysis_evidence,
+                        project_title=project.title if project else None,
+                        project_topic=project.topic if project else None,
+                    )
+                )
+                analysis = ResearchAnalysisStateService.with_readiness(
+                    provider_response.data,
+                    source_metadata,
+                )
+                logger.info(
+                    "Research paper analysis completed project_id=%s file_id=%s provider=%s",
+                    project_id, resource.id, provider_response.provider,
+                )
+            except (
+                ResearchAgentError,
+                EmbeddingError,
+                HybridRetrievalError,
+                VectorStoreError,
+                BM25StoreError,
+            ) as exc:
+                analysis_failed = True
+                analysis = ResearchAnalysisStateService.with_readiness(
+                    self._empty_project_analysis(), source_metadata
+                )
+                logger.warning(
+                    "Research paper structured analysis unavailable project_id=%s file_id=%s "
+                    "exception_type=%s stage=%s",
+                    project_id, resource.id, type(exc).__name__,
+                    (
+                        "contract_validation"
+                        if isinstance(exc, ResearchAgentContractError)
+                        else analysis_stage
+                    ),
+                )
         else:
             analysis = self._validated_analysis(
                 analysis_record,
@@ -190,12 +246,14 @@ class ResearchChatService:
             raise
         # A newly saved analysis is treated as a transition from an empty,
         # incomplete state so a complete initial parse can produce its draft.
-        draft = EvidenceCardDraftService(self.db).generate_draft_if_ready_transition(
-            current_user_id=current_user_id,
-            session_id=session_id,
-            analysis_id=analysis_record.id,
-            previous_readiness_status="INCOMPLETE",
-        )
+        draft = None
+        if not analysis_failed:
+            draft = EvidenceCardDraftService(self.db).generate_draft_if_ready_transition(
+                current_user_id=current_user_id,
+                session_id=session_id,
+                analysis_id=analysis_record.id,
+                previous_readiness_status="INCOMPLETE",
+            )
         if draft is not None:
             session = self.repository.get_owned_session(
                 session_id=session_id, user_id=current_user_id, for_update=True
@@ -208,10 +266,60 @@ class ResearchChatService:
                     content="当前核心研究信息已经完整，系统已生成证据卡草稿。",
                 )
                 self.db.commit()
+        if analysis_failed:
+            logger.warning(
+                "Research chat session created with incomplete analysis project_id=%s "
+                "file_id=%s session_id=%s",
+                project_id, resource.id, session_id,
+            )
         return self.get_session(
             current_user_id=current_user_id,
             session_id=session_id,
         )
+
+    async def _prepare_analysis_evidence(
+        self, *, project_id: int, file_id: int
+    ) -> tuple[str, list[ProjectKnowledgeSource], int]:
+        max_chunks = settings.research_analysis_max_chunks
+        max_chars = settings.research_analysis_max_context_chars
+        if max_chunks <= 0 or max_chars <= 0:
+            raise ValueError("Research analysis evidence limits must be positive")
+        topic_results: list[list[ProjectKnowledgeSource]] = []
+        for query in RESEARCH_ANALYSIS_QUERIES:
+            topic_results.append(
+                await self.project_knowledge.search_resource(
+                    project_id=project_id, file_id=file_id, query=query, top_k=5
+                )
+            )
+        retrieved_count = sum(len(items) for items in topic_results)
+        unique: dict[str, ProjectKnowledgeSource] = {}
+        for rank in range(5):
+            ranked = [items[rank] for items in topic_results if rank < len(items)]
+            for source in sorted(ranked, key=lambda item: item.score, reverse=True):
+                unique.setdefault(source.chunk_id, source)
+                if len(unique) >= max_chunks:
+                    break
+            if len(unique) >= max_chunks:
+                break
+        selected = list(unique.values())
+        blocks: list[str] = ["[ANALYSIS EVIDENCE]"]
+        used = len(blocks[0])
+        included: list[ProjectKnowledgeSource] = []
+        for index, source in enumerate(selected, start=1):
+            block = (
+                f"\n\n[Chunk {index}]\nfilename: {source.filename}\n"
+                f"chunk_id: {source.chunk_id}\ncontent:\n{source.content}"
+            )
+            if used + len(block) > max_chars:
+                remaining = max_chars - used
+                if remaining > 0:
+                    blocks.append(block[:remaining])
+                    included.append(source)
+                break
+            blocks.append(block)
+            used += len(block)
+            included.append(source)
+        return "".join(blocks), included, retrieved_count
 
     def get_session(
         self, *, current_user_id: int, session_id: int

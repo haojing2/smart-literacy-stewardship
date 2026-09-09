@@ -67,7 +67,12 @@ class HybridRetrievalService:
             raise ValueError("hybrid retrieval limits must be positive")
 
     async def search(
-        self, *, project_id: int, query: str, top_k: int | None = None
+        self,
+        *,
+        project_id: int,
+        query: str,
+        top_k: int | None = None,
+        allowed_file_ids: set[int] | None = None,
     ) -> list[HybridSearchResult]:
         """Retrieve FAISS Top-N and BM25 Top-N, then return RRF-ranked chunks."""
         effective_top_k = self._top_k if top_k is None else top_k
@@ -80,20 +85,26 @@ class HybridRetrievalService:
         keyword_results = []
         try:
             query_embedding = await self._embedding_service.embed_query(query)
-            semantic_results = self._vector_store.search(
-                project_id=project_id,
-                query_embedding=query_embedding,
-                top_k=self._candidate_k,
-            )
+            vector_options = {
+                "project_id": project_id,
+                "query_embedding": query_embedding,
+                "top_k": self._candidate_k,
+            }
+            if allowed_file_ids is not None:
+                vector_options["allowed_file_ids"] = allowed_file_ids
+            semantic_results = self._vector_store.search(**vector_options)
         except VectorIndexNotFoundError:
             pass
 
         try:
-            keyword_results = self._bm25_store.keyword_search(
-                project_id=project_id,
-                query=query,
-                top_k=self._candidate_k,
-            )
+            keyword_options = {
+                "project_id": project_id,
+                "query": query,
+                "top_k": self._candidate_k,
+            }
+            if allowed_file_ids is not None:
+                keyword_options["allowed_file_ids"] = allowed_file_ids
+            keyword_results = self._bm25_store.keyword_search(**keyword_options)
         except BM25IndexNotFoundError:
             pass
 

@@ -52,6 +52,12 @@ tests/
 
 # 如果后端测试目录是 backend/tests，也一起忽略
 backend/tests/
+!backend/tests/
+backend/tests/*
+!backend/tests/test_xfyun_native_embedding.py
+!backend/tests/test_aliyun_embedding.py
+!backend/tests/test_research_analysis_resilience.py
+!backend/tests/test_login_startup.py
 backend/data/knowledge_bases/
 
 # =========================

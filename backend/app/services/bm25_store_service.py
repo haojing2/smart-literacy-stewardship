@@ -45,7 +45,12 @@ class ProjectBM25Index:
             token for document in self._documents for token in set(document)
         )
 
-    def keyword_search(self, query: str, top_k: int) -> list[BM25SearchResult]:
+    def keyword_search(
+        self,
+        query: str,
+        top_k: int,
+        allowed_file_ids: set[int] | None = None,
+    ) -> list[BM25SearchResult]:
         if not isinstance(top_k, int) or top_k <= 0:
             raise BM25StoreError("top_k must be a positive integer")
         query_tokens = _tokenize(query)
@@ -55,6 +60,11 @@ class ProjectBM25Index:
         total_documents = len(self._documents)
         scored: list[BM25SearchResult] = []
         for index, document in enumerate(self._documents):
+            if (
+                allowed_file_ids is not None
+                and self.chunks[index].file_id not in allowed_file_ids
+            ):
+                continue
             frequencies = Counter(document)
             score = 0.0
             for token in query_tokens:
@@ -115,9 +125,16 @@ class BM25StoreService:
             raise BM25StoreError("Unable to load the local project BM25 index") from exc
 
     def keyword_search(
-        self, *, project_id: int, query: str, top_k: int
+        self,
+        *,
+        project_id: int,
+        query: str,
+        top_k: int,
+        allowed_file_ids: set[int] | None = None,
     ) -> list[BM25SearchResult]:
-        return self.load_index(project_id).keyword_search(query, top_k)
+        return self.load_index(project_id).keyword_search(
+            query, top_k, allowed_file_ids=allowed_file_ids
+        )
 
     def _save_index(self, project_id: int, project_index: ProjectBM25Index) -> None:
         index_path = self._paths.bm25_index_file(project_id)

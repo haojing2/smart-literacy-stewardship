@@ -16,12 +16,12 @@ from app.services.hybrid_retrieval_service import (
 @dataclass(frozen=True)
 class ProjectKnowledgeSource:
     content: str
-    project_id: int
     filename: str
     file_id: int
     chunk_id: str
     chunk_index: int
     score: float
+    project_id: int | None = None
 
 
 class ProjectKnowledgeService:
@@ -85,3 +85,43 @@ class ProjectKnowledgeService:
             for result in retrieved
             if result.file_id in ready_file_ids
         ][:top_k]
+
+    async def search_resource(
+        self,
+        *,
+        project_id: int,
+        file_id: int,
+        query: str,
+        top_k: int = 5,
+    ) -> list[ProjectKnowledgeSource]:
+        """Retrieve from one ready resource before applying either ranking cutoff."""
+        if not isinstance(file_id, int) or isinstance(file_id, bool) or file_id <= 0:
+            raise ValueError("file_id must be a positive integer")
+        if not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k must be a positive integer")
+        resource = self._resource_repository.get_by_id_and_project(
+            resource_id=file_id, project_id=project_id
+        )
+        if resource is None or resource.index_status != "ready":
+            return []
+        try:
+            retrieved = await self._hybrid_retrieval.search(
+                project_id=project_id,
+                query=query,
+                top_k=top_k,
+                allowed_file_ids={file_id},
+            )
+        except HybridRetrievalIndexNotFoundError:
+            return []
+        return [
+            ProjectKnowledgeSource(
+                content=result.content,
+                project_id=project_id,
+                filename=result.filename,
+                file_id=result.file_id,
+                chunk_id=result.chunk_id,
+                chunk_index=result.chunk_index,
+                score=result.score,
+            )
+            for result in retrieved
+        ]
