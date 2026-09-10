@@ -3,21 +3,40 @@ import json
 from app.assistants.prompts._json import build_json_messages
 from app.schemas.research_assistant import (
     EvidenceCardDraftResult, EvidenceCardGenerationRequest, ResearchAnalysisRequest,
-    ResearchAnalysisResult, ResearchChatRequest, ResearchChatResult,
+    ResearchAnalysisResult, ResearchAnalysisPatch, ResearchAnalysisSupplementRequest,
+    ResearchChatRequest, ResearchChatResult,
     ResearchConversationSummaryRequest, ResearchConversationSummaryResult,
 )
 
 def build_research_analysis_messages(request: ResearchAnalysisRequest) -> list[dict[str, str]]:
     return build_json_messages(
-        "Extract only facts supported by analysisEvidence. Missing list fields must be []; "
+        "analysisEvidence is field-aware: FIELD EVIDENCE assigns chunk ids to each field, "
+        "and CHUNK REGISTRY contains each chunk once. For every output field, inspect only "
+        "its assigned chunks and extract only explicitly supported facts. Never fill a field "
+        "from unrelated background text or invent participants, duration, instruments, "
+        "findings, strategies, or limitations. Missing list fields must be []; "
         "missing nullable fields must be null. Use only resultSchema camelCase keys; fields "
-        "such as participants, method, and sampleSize are forbidden. sourceExcerpt must be "
-        "a verbatim substring of analysisEvidence. Always return evidenceReady=false; the "
-        "application decides readiness. Return JSON only.",
+        "such as participants, method, and sampleSize are forbidden. sourceExcerpt is "
+        "optional and must be a verbatim substring of analysisEvidence when supplied. Always "
+        "return evidenceReady=false; the application decides readiness. Return JSON only. "
+        "Extract every result field independently.",
         request,
         ResearchAnalysisResult,
     )
 
+
+def build_research_analysis_supplement_messages(
+    request: ResearchAnalysisSupplementRequest,
+) -> list[dict[str, str]]:
+    return build_json_messages(
+        "Complete only the requested missing fields in an existing research-paper analysis. "
+        "Use only the supplied FIELD EVIDENCE. Return values only for missingFields; do not "
+        "rewrite any already validated field. Do not return sourceExcerpt or evidenceReady. "
+        "Do not infer unsupported information. If evidence is insufficient, leave the "
+        "requested list field empty or nullable field null. Return JSON only.",
+        request,
+        ResearchAnalysisPatch,
+    )
 def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str, str]]:
     return _research_chat_context_messages(
         request,
@@ -86,10 +105,20 @@ def _research_chat_context_messages(
         if request.retrieval_scope == "RESOURCE"
         else "Evidence may be retrieved from all ready resources in this project."
     )
+    uploaded_resource_exists = "YES" if request.resource_id is not None else "PROJECT SCOPE"
     system_prompt += (
-        "\n\n[RETRIEVAL SCOPE]\n"
-        f"Scope: {request.retrieval_scope}\n{scope_description}\n"
-        "Do not attribute claims to any file outside this scope."
+        "\n\n[LOCAL KNOWLEDGE STATUS]\n"
+        f"Uploaded research resource exists: {uploaded_resource_exists}\n"
+        f"Retrieval scope: {request.retrieval_scope}\n"
+        f"Resource ID: {request.resource_id if request.resource_id is not None else 'Not applicable'}\n"
+        f"Retrieval status: {request.retrieval_status}\n"
+        f"Retrieval query: {request.retrieval_query or request.message}\n"
+        f"{scope_description}\n"
+        "Do not attribute claims to any file outside this scope. If an uploaded resource "
+        "exists, EMPTY means no sufficiently relevant evidence was retrieved for this "
+        "question, and FAILED means local retrieval had a technical failure. Neither status "
+        "means that no file was uploaded. Never ask the user to upload or re-upload that "
+        "resource merely because retrieval is EMPTY or FAILED."
     )
     def shown(value: object) -> str:
         if value is None or value == [] or value == {} or value == "":
@@ -137,6 +166,10 @@ def _research_chat_context_messages(
             "content": "[CURRENT USER QUESTION]\n"
             + request.message
             + "\n\n[RESPONSE INSTRUCTION]\n"
+            + "Use the evidence retrieved for this current question first. If it is EMPTY, "
+            + "state that the uploaded material exists but this retrieval found insufficient "
+            + "direct evidence. If it is FAILED, state that the uploaded material exists but "
+            + "it cannot currently be searched reliably. Do not claim that no material was uploaded.\n"
             + response_instruction,
         }
     )
@@ -161,9 +194,16 @@ def _recent_conversation_messages(request: ResearchChatRequest) -> list[dict[str
 def _project_evidence(request: ResearchChatRequest) -> str:
     if not request.project_knowledge_sources:
         if request.retrieval_status == "FAILED":
-            return "Evidence retrieval failed; do not interpret this as absence of uploaded materials."
+            return (
+                "Local evidence retrieval failed for the current question. The uploaded "
+                "research resource still exists; do not interpret this technical failure "
+                "as absence of uploaded materials."
+            )
         scope = "selected resource" if request.retrieval_scope == "RESOURCE" else "project"
-        return f"Retrieval succeeded but returned no relevant ready evidence in the {scope} scope."
+        return (
+            f"The research material exists, but retrieval returned no sufficiently relevant "
+            f"evidence for the current question in the {scope} scope."
+        )
     return "\n\n".join(
         "\n".join(
             (

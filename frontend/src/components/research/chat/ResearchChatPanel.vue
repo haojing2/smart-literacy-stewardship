@@ -49,7 +49,7 @@ const explorationScaffolds = computed(() => {
   const analysis = props.analysis
   return [
     { key: 'researchTopic', label: '研究问题', question: '围绕当前课程主题，已有研究主要关注哪些教学或学习问题？', complete: Boolean(analysis?.researchTopic) },
-    { key: 'participants', label: '学习者', question: '针对当前项目中的学生群体，已有研究有哪些相关发现？', complete: Boolean(analysis?.participants.length) },
+    { key: 'participants', label: '研究对象', question: '针对当前研究的目标对象是哪些学生群体？', complete: Boolean(analysis?.participants.length) },
     { key: 'aiLiteracyDimensions', label: '能力重点', question: '已有研究主要关注学生哪些能力或素养的发展？', complete: Boolean(analysis?.aiLiteracyDimensions.length) },
     { key: 'teachingStrategies', label: '教学策略', question: '哪些教学策略得到已有研究支持，并适合当前课程？', complete: Boolean(analysis?.teachingStrategies.length) },
     { key: 'intervention', label: '实施条件', question: '这些教学策略通常在什么课时、环境和技术条件下实施？', complete: Boolean(analysis?.intervention) },

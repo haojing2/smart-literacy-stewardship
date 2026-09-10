@@ -8,8 +8,10 @@ import {
   createResearchSession as createResearchSessionApi,
   extractResearchText as extractResearchTextApi,
   getEvidenceCard as getEvidenceCardApi,
+  getResearchSession as getResearchSessionApi,
   getLatestProjectResearchSession as getLatestProjectResearchSessionApi,
   getLatestResourceResearchSession as getLatestResourceResearchSessionApi,
+  getLatestResearchSessionForResource as getLatestResearchSessionForResourceApi,
   getProjectResearchResources as getProjectResearchResourcesApi,
   sendResearchMessage as sendResearchMessageApi,
   updateEvidenceCard as updateEvidenceCardApi,
@@ -22,6 +24,7 @@ import {
 } from '@/api/research'
 import { researchMockService } from '@/mocks/researchMockService'
 import type {
+  AnalysisGenerationStatus,
   EvidenceCard,
   EvidenceCardEditableFields,
   ReadinessStatus,
@@ -37,6 +40,20 @@ import type {
 const useMock = import.meta.env.VITE_RESEARCH_USE_MOCK === 'true'
 const sessionStorageKey = (projectId: number) => `research-session:${projectId}`
 const resourcesStorageKey = (projectId: number) => `research-resources:${projectId}`
+const activeScopeStorageKey = (projectId: number) => `research-active-scope:${projectId}`
+
+type ActiveScopeState = { scope: 'PROJECT' | 'RESOURCE'; resourceId?: number }
+
+function loadActiveScope(projectId: number): ActiveScopeState | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(activeScopeStorageKey(projectId)) ?? 'null') as ActiveScopeState | null
+    if (!value || !['PROJECT', 'RESOURCE'].includes(value.scope)) return null
+    if (value.scope === 'RESOURCE' && (!Number.isInteger(value.resourceId) || Number(value.resourceId) <= 0)) return null
+    return value
+  } catch {
+    return null
+  }
+}
 
 function backendAnalysis(payload: BackendAnalysisPayload | null): ResearchAnalysis | null {
   if (!payload) return null
@@ -95,6 +112,12 @@ function messageFromError(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+function isStaleEvidenceError(error: unknown): boolean {
+  if (!isAxiosError<{ code?: number; detail?: { code?: number } }>(error)) return false
+  const code = error.response?.data?.code ?? error.response?.data?.detail?.code
+  return error.response?.status === 409 && code === 40906
+}
+
 export const useResearchStore = defineStore('research', () => {
   const currentProject = ref<ResearchProjectContext | null>(null)
   const projectSession = ref<ResearchChatSession | null>(null)
@@ -108,6 +131,7 @@ export const useResearchStore = defineStore('research', () => {
   const readinessStatus = ref<ReadinessStatus>('INCOMPLETE')
   const missingRequiredFields = ref<string[]>([])
   const missingRecommendedFields = ref<string[]>([])
+  const analysisGenerationStatus = ref<AnalysisGenerationStatus | null>(null)
   const uploadStatus = ref<UploadStatus | 'IDLE'>('IDLE')
   const isUploading = ref(false)
   const isExtracting = ref(false)
@@ -120,27 +144,31 @@ export const useResearchStore = defineStore('research', () => {
   const loading = ref(false)
   const error = ref('')
   type WorkspaceState = {
+    session: ResearchChatSession
     messages: ResearchChatMessage[]
     analysis: ResearchAnalysis | null
     readiness: Parameters<typeof setReadiness>[0] | null
     evidenceDraft: EvidenceCard | null
+    analysisGenerationStatus: AnalysisGenerationStatus | null
   }
   const projectWorkspace = ref<WorkspaceState | null>(null)
   const resourceWorkspaces = new Map<number, WorkspaceState>()
+  const activeWorkspace = ref<WorkspaceState | null>(null)
 
   const selectedResourceItems = computed(() =>
     resources.value.filter((resource) => selectedResources.value[0] === resource.resourceId),
   )
-  const activeSession = computed(() => {
-    const selectedId = selectedResources.value[0]
-    return selectedId !== undefined && resourceSession.value?.resourceId === selectedId
-      ? resourceSession.value
-      : projectSession.value
-  })
+  const activeSession = computed(() => activeWorkspace.value?.session ?? projectSession.value)
   const activeScopeLabel = computed(() =>
     activeSession.value?.resourceId == null
       ? '当前研究依据：项目知识库（全部已就绪研究资源）'
       : `当前研究依据：${selectedResourceItems.value[0]?.fileName ?? '已选资源'}`,
+  )
+  const activeAnalysisScope = computed(() => activeSession.value?.resourceId == null ? 'PROJECT' : 'RESOURCE')
+  const activeAnalysisSource = computed(() =>
+    activeAnalysisScope.value === 'RESOURCE'
+      ? selectedResourceItems.value[0]?.fileName ?? '已选研究资源'
+      : '全部已就绪研究资源',
   )
   const resourceCount = computed(() => resources.value.length)
   const evidenceCount = computed(() => (evidenceDraft.value ? 1 : 0))
@@ -169,10 +197,12 @@ export const useResearchStore = defineStore('research', () => {
     readinessStatus.value = 'INCOMPLETE'
     missingRequiredFields.value = []
     missingRecommendedFields.value = []
+    analysisGenerationStatus.value = null
     uploadStatus.value = 'IDLE'
     error.value = ''
     projectWorkspace.value = null
     resourceWorkspaces.clear()
+    activeWorkspace.value = null
   }
 
   function addSystemMessage(content: string, messageType: ResearchChatMessage['messageType'] = 'PROCESS') {
@@ -187,11 +217,14 @@ export const useResearchStore = defineStore('research', () => {
   }
 
   function activateWorkspace(state: WorkspaceState) {
+    activeWorkspace.value = state
+    selectedResources.value = state.session.resourceId === null ? [] : [state.session.resourceId]
     messages.value = [...state.messages]
     analysis.value = state.analysis
     if (state.readiness) setReadiness(state.readiness)
     else setReadiness({ readinessScore: 0, readinessStatus: 'INCOMPLETE', missingRequiredFields: [], missingRecommendedFields: [] })
     evidenceDraft.value = state.evidenceDraft
+    analysisGenerationStatus.value = state.analysisGenerationStatus
   }
 
   function applySnapshot(snapshot: {
@@ -201,12 +234,15 @@ export const useResearchStore = defineStore('research', () => {
     analysis?: ResearchAnalysis | null
     readiness?: Parameters<typeof setReadiness>[0] | null
     evidenceDraft?: EvidenceCard | null
+    analysisGenerationStatus?: AnalysisGenerationStatus | null
   }, options: { activate?: boolean } = {}) {
     const state: WorkspaceState = {
+      session: snapshot.session,
       messages: snapshot.messages,
       analysis: snapshot.analysis ?? null,
       readiness: snapshot.readiness ?? null,
       evidenceDraft: snapshot.evidenceDraft ?? null,
+      analysisGenerationStatus: snapshot.analysisGenerationStatus ?? null,
     }
     if (snapshot.session.resourceId === null) {
       projectSession.value = snapshot.session
@@ -217,12 +253,14 @@ export const useResearchStore = defineStore('research', () => {
     }
     if (snapshot.resources) resources.value = snapshot.resources
     if (options.activate === false) return
-    selectedResources.value = snapshot.session.resourceId === null ? [] : [snapshot.session.resourceId]
     activateWorkspace(state)
   }
 
   function cacheActiveWorkspace() {
+    const session = activeSession.value
+    if (!session) return
     const state: WorkspaceState = {
+      session,
       messages: [...messages.value], analysis: analysis.value,
       readiness: {
         readinessScore: readinessScore.value, readinessStatus: readinessStatus.value,
@@ -230,8 +268,10 @@ export const useResearchStore = defineStore('research', () => {
         missingRecommendedFields: [...missingRecommendedFields.value],
       },
       evidenceDraft: evidenceDraft.value,
+      analysisGenerationStatus: analysisGenerationStatus.value,
     }
-    const resourceId = activeSession.value?.resourceId
+    activeWorkspace.value = state
+    const resourceId = session.resourceId
     if (resourceId == null) projectWorkspace.value = state
     else resourceWorkspaces.set(resourceId, state)
   }
@@ -251,6 +291,23 @@ export const useResearchStore = defineStore('research', () => {
       await new Promise((resolve) => window.setTimeout(resolve, 900))
     }
     throw new Error('论文知识索引在 120 秒内未就绪，请稍后重试')
+  }
+
+  async function refreshActiveResearchState() {
+    const session = activeSession.value
+    if (!session || useMock) return
+    const payload = (await getResearchSessionApi(session.sessionId)).data.data
+    const currentEvidence = payload.evidenceCardId
+      ? backendEvidence((await getEvidenceCardApi(payload.evidenceCardId)).data.data)
+      : null
+    applySnapshot({
+      session: backendSession(payload),
+      messages: payload.messages.map(backendMessage),
+      analysis: backendAnalysis(payload.latestAnalysis),
+      readiness: payload.readiness,
+      evidenceDraft: currentEvidence,
+      analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
+    })
   }
 
   async function initialize(projectId: number) {
@@ -289,12 +346,16 @@ export const useResearchStore = defineStore('research', () => {
       applySnapshot({
         session: backendSession(payload),
         messages: payload.messages.map(backendMessage),
-        analysis: null,
-        readiness: null,
+        analysis: backendAnalysis(payload.latestAnalysis),
+        readiness: payload.readiness,
+        analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
       })
 
       try {
-        const resourcePayload = (await getLatestResourceResearchSessionApi(projectId)).data.data
+        const savedScope = loadActiveScope(projectId)
+        const resourcePayload = savedScope?.scope === 'RESOURCE' && savedScope.resourceId
+          ? (await getLatestResearchSessionForResourceApi(projectId, savedScope.resourceId)).data.data
+          : (await getLatestResourceResearchSessionApi(projectId)).data.data
         let resourceEvidence: EvidenceCard | null = null
         if (resourcePayload.evidenceCardId) {
           resourceEvidence = backendEvidence(
@@ -307,7 +368,8 @@ export const useResearchStore = defineStore('research', () => {
           analysis: backendAnalysis(resourcePayload.latestAnalysis),
           readiness: resourcePayload.readiness,
           evidenceDraft: resourceEvidence,
-        }, { activate: false })
+          analysisGenerationStatus: resourcePayload.analysisGenerationStatus ?? null,
+        }, { activate: savedScope?.scope === 'RESOURCE' })
       } catch (resourceSessionError) {
         if (!isAxiosError(resourceSessionError) || resourceSessionError.response?.status !== 404) {
           throw resourceSessionError
@@ -409,7 +471,11 @@ export const useResearchStore = defineStore('research', () => {
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
           analysis: backendAnalysis(payload.latestAnalysis), readiness: payload.readiness,
           evidenceDraft: resourceEvidence,
+          analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
         })
+        localStorage.setItem(activeScopeStorageKey(project.projectId), JSON.stringify({
+          scope: 'RESOURCE', resourceId: uploaded.resourceId,
+        }))
         localStorage.setItem(resourcesStorageKey(project.projectId), JSON.stringify(resources.value))
         addSystemMessage('论文解析完成，可在右侧查看研究解析与证据卡。')
       }
@@ -478,7 +544,11 @@ export const useResearchStore = defineStore('research', () => {
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
           analysis: backendAnalysis(payload.latestAnalysis), readiness: payload.readiness,
           evidenceDraft: resourceEvidence,
+          analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
         })
+        localStorage.setItem(activeScopeStorageKey(project.projectId), JSON.stringify({
+          scope: 'RESOURCE', resourceId,
+        }))
       }
       addSystemMessage('研究资源重新解析完成')
     } catch (requestError) {
@@ -541,16 +611,21 @@ export const useResearchStore = defineStore('research', () => {
       const pendingIndex = messages.value.findIndex((message) => message.messageId === temporaryId)
       if (pendingIndex >= 0) messages.value.splice(pendingIndex, 1, normalized.userMessage)
       messages.value.push(normalized.assistantMessage)
-      if (normalized.updatedAnalysis) analysis.value = normalized.updatedAnalysis
+      if (normalized.updatedAnalysis) {
+        analysis.value = normalized.updatedAnalysis
+        analysisGenerationStatus.value = 'READY'
+      }
       if (normalized.readiness) setReadiness(normalized.readiness)
       if (normalized.evidenceDraftGenerated) {
         addSystemMessage('当前核心研究信息已完整，系统已生成证据卡草稿。', 'EVIDENCE_DRAFT')
-        isGeneratingEvidence.value = true
+      }
+      if (normalized.evidenceCardId) {
+        isGeneratingEvidence.value = normalized.evidenceDraftGenerated
         evidenceDraft.value = useMock
           ? await researchMockService.getEvidenceCard(project.projectId)
-          : normalized.evidenceCardId
-            ? backendEvidence((await getEvidenceCardApi(normalized.evidenceCardId)).data.data)
-            : null
+          : backendEvidence((await getEvidenceCardApi(normalized.evidenceCardId)).data.data)
+      } else if (normalized.updatedAnalysis) {
+        evidenceDraft.value = null
       }
       cacheActiveWorkspace()
       return true
@@ -575,6 +650,7 @@ export const useResearchStore = defineStore('research', () => {
       if (useMock) {
         const result = await researchMockService.updateAnalysis(project.projectId, updated)
         analysis.value = result.analysis
+        analysisGenerationStatus.value = 'READY'
         setReadiness(result.readiness)
         if (result.evidenceDraftGenerated) {
           evidenceDraft.value = result.evidenceDraft
@@ -583,9 +659,14 @@ export const useResearchStore = defineStore('research', () => {
       } else {
         const response = await updateResearchAnalysisApi(session.sessionId, updated)
         analysis.value = { ...response.data.data.latestAnalysis, version: response.data.data.version }
+        analysisGenerationStatus.value = 'READY'
         setReadiness(response.data.data.readiness)
-        if (response.data.data.evidenceDraftGenerated && response.data.data.evidenceCardId) {
+        if (response.data.data.evidenceCardId) {
           evidenceDraft.value = backendEvidence((await getEvidenceCardApi(response.data.data.evidenceCardId)).data.data)
+        } else {
+          evidenceDraft.value = null
+        }
+        if (response.data.data.evidenceDraftGenerated) {
           addSystemMessage('当前核心研究信息已经完整，系统已生成证据卡草稿。', 'EVIDENCE_DRAFT')
         }
       }
@@ -650,6 +731,18 @@ export const useResearchStore = defineStore('research', () => {
       addSystemMessage('已保存为正式研究证据', 'EVIDENCE_DRAFT')
       return true
     } catch (requestError) {
+      if (isStaleEvidenceError(requestError)) {
+        evidenceDraft.value = null
+        cacheActiveWorkspace()
+        try {
+          await refreshActiveResearchState()
+        } catch {
+          evidenceDraft.value = null
+          cacheActiveWorkspace()
+        }
+        error.value = '研究解析已更新，证据卡已同步到最新版本，请重新确认。'
+        return false
+      }
       error.value = messageFromError(requestError, '证据卡确认失败')
       return false
     } finally {
@@ -661,6 +754,9 @@ export const useResearchStore = defineStore('research', () => {
     selectedResources.value = selectedResources.value.filter((id) => id !== resourceId)
     if (selectedResources.value.length === 0 && projectWorkspace.value) {
       activateWorkspace(projectWorkspace.value)
+      if (currentProject.value) {
+        localStorage.setItem(activeScopeStorageKey(currentProject.value.projectId), JSON.stringify({ scope: 'PROJECT' }))
+      }
     }
   }
 
@@ -682,6 +778,9 @@ export const useResearchStore = defineStore('research', () => {
     readinessStatus,
     missingRequiredFields,
     missingRecommendedFields,
+    analysisGenerationStatus,
+    activeAnalysisScope,
+    activeAnalysisSource,
     uploadStatus,
     isUploading,
     isExtracting,
@@ -696,6 +795,7 @@ export const useResearchStore = defineStore('research', () => {
     resourceCount,
     evidenceCount,
     initialize,
+    refreshActiveResearchState,
     uploadAndProcess,
     retryResource,
     sendMessage,

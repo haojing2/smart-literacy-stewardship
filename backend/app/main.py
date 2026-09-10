@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -42,10 +43,23 @@ from app.agents.research.errors import (
     ResearchAgentTimeoutError,
 )
 from app.db.session import engine
+from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if settings.debug:
+        logger.info(
+            "Spark OpenAI-compatible configuration provider=%s base_url=%s model=%s timeout=%s api_key_configured=%s",
+            settings.llm_provider,
+            settings.spark_api_base,
+            settings.spark_model_id,
+            settings.spark_timeout_seconds,
+            bool(settings.spark_api_key),
+        )
     yield
 
 

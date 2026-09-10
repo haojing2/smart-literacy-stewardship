@@ -1,0 +1,60 @@
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+from app.assistants.spark_client import SparkLLMClient, SparkProviderError
+from app.core.config import settings
+
+
+def test_default_spark_openai_compatible_contract() -> None:
+    assert settings.spark_api_base == "https://spark-api-open.xf-yun.com/v1"
+    assert settings.spark_model_id == "generalv3.5"
+    assert settings.spark_user_id == "123456"
+    assert settings.spark_timeout_seconds == 120.0
+
+
+def test_chat_and_stream_read_the_same_model_from_settings() -> None:
+    completion = AsyncMock()
+    completion.create.side_effect = [
+        type("Response", (), {"choices": [type("Choice", (), {"message": type("Message", (), {"content": "ok"})()})()]})(),
+        _stream_chunks(),
+    ]
+    with patch("app.assistants.spark_client.AsyncOpenAI") as client_type:
+        client_type.return_value.chat.completions = completion
+        client = SparkLLMClient()
+
+        async def exercise_client() -> tuple[str, str]:
+            chat_result = await client.chat([{"role": "user", "content": "hello"}])
+            stream_result = "".join(
+                [
+                    item
+                    async for item in client.stream_chat(
+                        [{"role": "user", "content": "hello"}]
+                    )
+                ]
+            )
+            return chat_result, stream_result
+
+        assert asyncio.run(exercise_client()) == ("ok", "stream")
+
+    assert completion.create.await_args_list[0].kwargs["model"] == settings.spark_model_id
+    assert completion.create.await_args_list[1].kwargs["model"] == settings.spark_model_id
+    assert client_type.call_args.kwargs["base_url"] == settings.spark_api_base
+
+
+def test_provider_error_preserves_safe_diagnostics() -> None:
+    response = type(
+        "Response",
+        (),
+        {"json": lambda self: {"error": {"code": 11200, "type": "AppIdNoAuthError", "message": "not authorized"}}},
+    )()
+    exc = type("StatusError", (), {"response": response, "status_code": 500})()
+    error = SparkLLMClient._provider_error(exc, operation="request")  # type: ignore[arg-type]
+    assert isinstance(error, SparkProviderError)
+    assert error.status_code == 500
+    assert error.provider_code == 11200
+    assert error.provider_type == "AppIdNoAuthError"
+
+
+async def _stream_chunks():
+    delta = type("Delta", (), {"content": "stream"})()
+    yield type("Chunk", (), {"choices": [type("Choice", (), {"delta": delta})()]})()

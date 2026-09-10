@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -90,6 +91,18 @@ class ResearchKnowledgeIndexService:
                 self.paths.path_from_storage_key(resource.storage_key).name,
             )
             parsed_path.write_text(resource.extracted_text, encoding="utf-8")
+            content_format = (
+                "MARKDOWN"
+                if re.search(r"(?m)^#{1,6}\\s+", resource.extracted_text)
+                else "PLAIN_TEXT"
+            )
+            logger.info(
+                "Research knowledge source format project_id=%s file_id=%s "
+                "content_format=%s",
+                project_id,
+                resource_id,
+                content_format,
+            )
             self.repository.mark_index_indexing(
                 resource,
                 parsed_path=self.paths.storage_key(parsed_path),
@@ -138,6 +151,13 @@ class ResearchKnowledgeIndexService:
                 return
             self.repository.mark_index_ready(resource)
             self.db.commit()
+            logger.info(
+                "Research knowledge index ready project_id=%s file_id=%s "
+                "chunk_count=%s index_status=ready",
+                project_id,
+                resource_id,
+                len(chunks),
+            )
             self._log(project_id, resource_id, "ready")
         except Exception as exc:
             self.db.rollback()

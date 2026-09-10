@@ -28,6 +28,23 @@ class SparkNetworkError(SparkLLMError):
     pass
 
 
+class SparkProviderError(SparkLLMError):
+    """Spark accepted the HTTP request but rejected it at provider level."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        provider_code: str | int | None = None,
+        provider_type: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.provider_code = provider_code
+        self.provider_type = provider_type
+
+
 class SparkTimeoutError(SparkLLMError):
     pass
 
@@ -79,8 +96,7 @@ class SparkLLMClient:
             logger.warning("Spark request failed due to a network error")
             raise SparkNetworkError("Spark request failed due to a network error") from exc
         except APIStatusError as exc:
-            logger.warning("Spark returned HTTP status %s", exc.status_code)
-            raise SparkNetworkError(f"Spark returned HTTP status {exc.status_code}") from exc
+            raise self._provider_error(exc, operation="request") from exc
         except Exception as exc:
             logger.warning("Unexpected Spark SDK failure: %s", type(exc).__name__)
             raise SparkLLMError("Spark request failed") from exc
@@ -118,8 +134,7 @@ class SparkLLMClient:
             logger.warning("Spark stream failed due to %s", type(exc).__name__)
             raise SparkNetworkError("Spark stream failed due to a network or timeout error") from exc
         except APIStatusError as exc:
-            logger.warning("Spark stream returned HTTP status %s", exc.status_code)
-            raise SparkNetworkError(f"Spark stream returned HTTP status {exc.status_code}") from exc
+            raise self._provider_error(exc, operation="stream") from exc
         except Exception as exc:
             logger.warning("Unexpected Spark streaming SDK failure: %s", type(exc).__name__)
             raise SparkLLMError("Spark stream failed") from exc
@@ -153,3 +168,35 @@ class SparkLLMClient:
             if isinstance(payload, dict):
                 return payload
         raise SparkResponseParseError("Spark response does not contain a complete JSON object")
+
+    @staticmethod
+    def _provider_error(exc: APIStatusError, *, operation: str) -> SparkProviderError:
+        provider_code: str | int | None = None
+        provider_type: str | None = None
+        provider_message: str | None = None
+        try:
+            payload = exc.response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            details = error if isinstance(error, dict) else payload
+            provider_code = details.get("code")
+            provider_type = details.get("type")
+            provider_message = details.get("message")
+            if not isinstance(provider_message, str):
+                provider_message = None
+        logger.warning(
+            "Spark provider rejected %s http_status=%s provider_code=%s provider_type=%s provider_message=%s",
+            operation,
+            exc.status_code,
+            provider_code,
+            provider_type,
+            provider_message,
+        )
+        return SparkProviderError(
+            f"Spark provider returned HTTP status {exc.status_code}",
+            status_code=exc.status_code,
+            provider_code=provider_code,
+            provider_type=provider_type,
+        )

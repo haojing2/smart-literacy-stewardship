@@ -58,9 +58,6 @@ class ResearchAnalysisService:
         current = (self._require_latest_analysis(resource.id) if resource
                    else self._require_latest_session_analysis(session.id))
         current_data = self._validated_analysis(current, source_metadata)
-        previous_readiness = ResearchAnalysisStateService.readiness(
-            current_data, source_metadata
-        )
         updated_data = ResearchAnalysisStateService.from_edit_request(
             request,
             source_excerpt=current_data.source_excerpt,
@@ -88,13 +85,12 @@ class ResearchAnalysisService:
         except Exception:
             self.db.rollback()
             raise
-        draft = EvidenceCardDraftService(self.db).generate_draft_if_ready_transition(
+        synchronized = EvidenceCardDraftService(self.db).ensure_current_draft(
             current_user_id=current_user_id,
             session_id=session_id,
             analysis_id=updated.id,
-            previous_readiness_status=previous_readiness.readiness_status,
         )
-        if draft is not None:
+        if synchronized.created:
             session = self.repository.get_owned_session(
                 session_id=session_id, user_id=current_user_id, for_update=True
             )
@@ -112,8 +108,12 @@ class ResearchAnalysisService:
             analysis=updated_data,
             source_metadata=source_metadata,
         )
-        response.evidence_draft_generated = draft is not None
-        response.evidence_card_id = draft.evidence_card_id if draft else None
+        response.evidence_draft_generated = synchronized.created
+        response.evidence_card_id = (
+            synchronized.draft.evidence_card_id
+            if synchronized.draft is not None
+            else None
+        )
         return response
 
     def confirm_analysis(

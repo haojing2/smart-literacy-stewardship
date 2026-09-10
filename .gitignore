@@ -58,6 +58,14 @@ backend/tests/*
 !backend/tests/test_aliyun_embedding.py
 !backend/tests/test_research_analysis_resilience.py
 !backend/tests/test_login_startup.py
+!backend/tests/test_resource_creation_recovery.py
+!backend/tests/test_research_chat_followup_retrieval.py
+!backend/tests/test_spark_llm_configuration.py
+!backend/tests/test_evidence_card_lifecycle_sync.py
+!backend/tests/test_research_analysis_pipeline.py
+!backend/tests/integration/
+backend/tests/integration/*
+!backend/tests/integration/test_spark_llm_live.py
 backend/data/knowledge_bases/
 
 # =========================

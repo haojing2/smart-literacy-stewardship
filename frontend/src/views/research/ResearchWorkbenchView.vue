@@ -19,6 +19,7 @@ const {
   readinessScore, readinessStatus, missingRequiredFields, isUploading, isExtracting,
   isAnalyzing, isSending, isUpdatingAnalysis, isGeneratingEvidence, isUpdatingEvidence, isConfirmingEvidence,
   loading, error, resourceCount, evidenceCount, activeSession, activeScopeLabel,
+  analysisGenerationStatus, activeAnalysisScope, activeAnalysisSource,
 } = storeToRefs(store)
 const invalidProject = computed(() => {
   const value = String(route.params.projectId ?? '')
@@ -124,7 +125,7 @@ onMounted(() => void initialize())
       <ResearchContextHeader :project="currentProject" :resource-count="resourceCount" :evidence-count="evidenceCount" :continuing="isCompletingResearch" :mock-mode="researchMockMode" @view-resources="viewResources" @continue-course-design="continueCourseDesign" />
       <section class="research-workspace">
         <ResearchChatPanel :resources="resources" :selected-resources="selectedResourceItems" :active-scope-label="activeScopeLabel" :messages="messages" :analysis="analysis" :sending="isSending" :processing="processing" :evidence-ready="readinessStatus === 'READY'" :has-active-session="hasActiveSession" :initialization-failed="sessionInitializationFailed" :send-message="sendMessage" @upload="upload" @retry-message="retryMessage" @retry-resource="store.retryResource" @remove-resource="store.removeSelectedResource" @retry-initialize="initialize" />
-        <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" />
+        <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" :analysis-generation-status="analysisGenerationStatus" :analysis-scope="activeAnalysisScope" :analysis-source="activeAnalysisSource" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" @reanalyze="activeSession?.resourceId && store.retryResource(activeSession.resourceId)" />
       </section>
     </template>
   </main>

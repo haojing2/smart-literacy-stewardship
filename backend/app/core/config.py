@@ -66,8 +66,8 @@ class Settings(BaseSettings):
 
     llm_provider: str = "mock"
     spark_api_key: str | None = None
-    spark_api_base: str = "https://spark-api-open.xf-yun.com/v2"
-    spark_model_id: str = "spark-x"
+    spark_api_base: str = "https://spark-api-open.xf-yun.com/v1"
+    spark_model_id: str = "generalv3.5"
     spark_user_id: str = "123456"
     spark_timeout_seconds: float = 120.0
 

@@ -18,7 +18,7 @@ from app.assistants.prompts.course_context import build_course_context_messages
 from app.assistants.prompts.course_objective import build_course_objective_messages
 from app.assistants.prompts.course_pedagogy import build_course_pedagogy_messages
 from app.assistants.prompts.course_quality import build_course_quality_messages
-from app.assistants.prompts.research import build_evidence_card_messages, build_research_analysis_messages, build_research_chat_messages, build_research_chat_stream_messages
+from app.assistants.prompts.research import build_evidence_card_messages, build_research_analysis_messages, build_research_analysis_supplement_messages, build_research_chat_messages, build_research_chat_stream_messages
 from app.assistants.prompts.resource_creation import (
     build_teaching_resource_messages,
     validate_generated_resource,
@@ -32,9 +32,11 @@ from app.schemas.course_design import (
 )
 from app.schemas.research_assistant import (
     EvidenceCardDraftResult, EvidenceCardGenerationRequest, EvidenceCardGenerationResponse,
-    ResearchAnalysisRequest, ResearchAnalysisResponse, ResearchAnalysisResult, ResearchChatRequest,
+    ResearchAnalysisPatch, ResearchAnalysisRequest, ResearchAnalysisResponse, ResearchAnalysisResult,
+    ResearchAnalysisSupplementRequest, ResearchAnalysisSupplementResponse, ResearchChatRequest,
     ResearchChatResponse, ResearchChatResult,
 )
+from app.services.research_source_validation_service import validate_source_excerpt
 from app.schemas.resource_creation import (
     ResourceBlockTransformProviderRequest, ResourceBlockTransformResult, ResourceRevisionProposalRequest,
     ResourceRevisionProposalResult, ResourceSettingsRecommendationRequest, ResourceSettingsRecommendationResult,
@@ -61,9 +63,25 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         result = await self._from_messages(build_research_analysis_messages(request), ResearchAnalysisResult)
         # Evidence readiness is a deterministic service concern, never an LLM decision.
         result = result.model_copy(update={"evidence_ready": False})
-        if result.source_excerpt and result.source_excerpt not in request.extracted_text:
-            raise SparkContractError("Spark sourceExcerpt must be copied from extracted_text")
+        source_text = request.analysis_evidence or request.extracted_text or ""
+        result = result.model_copy(update={
+            "source_excerpt": validate_source_excerpt(
+                result.source_excerpt, source_text, resource_id=request.resource_id
+            )
+        })
         return ResearchAnalysisResponse(provider=self.provider_name, request_fingerprint=self._fingerprint(request), data=result)
+
+    async def supplement_research_analysis(
+        self, request: ResearchAnalysisSupplementRequest
+    ) -> ResearchAnalysisSupplementResponse:
+        result = await self._from_messages(
+            build_research_analysis_supplement_messages(request), ResearchAnalysisPatch
+        )
+        return ResearchAnalysisSupplementResponse(
+            provider=self.provider_name,
+            request_fingerprint=self._fingerprint(request),
+            data=result,
+        )
 
     async def chat(self, request: ResearchChatRequest) -> ResearchChatResponse:
         result = await self._from_messages(build_research_chat_messages(request), ResearchChatResult)

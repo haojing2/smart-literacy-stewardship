@@ -17,6 +17,8 @@ from app.schemas.research_assistant import (
     ResearchAnalysisPatch,
     ResearchAnalysisResponse,
     ResearchAnalysisResult,
+    ResearchAnalysisSupplementRequest,
+    ResearchAnalysisSupplementResponse,
     ResearchChatRequest,
     ResearchChatResponse,
     ResearchChatResult,
@@ -67,7 +69,9 @@ class MockResearchAssistant(ResearchAssistantProvider):
         self, request: ResearchAnalysisRequest
     ) -> ResearchAnalysisResponse:
         fingerprint = self._fingerprint(request)
-        normalized_text = self._normalize_text(request.extracted_text)
+        normalized_text = self._normalize_text(
+            request.analysis_evidence or request.extracted_text
+        )
         topic = request.project_topic or self._first_line(normalized_text)
         result = ResearchAnalysisResult(
             research_topics=[topic] if topic else [],
@@ -78,6 +82,15 @@ class MockResearchAssistant(ResearchAssistantProvider):
             provider=self.provider_name,
             request_fingerprint=fingerprint,
             data=result,
+        )
+
+    async def supplement_research_analysis(
+        self, request: ResearchAnalysisSupplementRequest
+    ) -> ResearchAnalysisSupplementResponse:
+        return ResearchAnalysisSupplementResponse(
+            provider=self.provider_name,
+            request_fingerprint=self._fingerprint(request),
+            data=ResearchAnalysisPatch(),
         )
 
     async def chat(self, request: ResearchChatRequest) -> ResearchChatResponse:

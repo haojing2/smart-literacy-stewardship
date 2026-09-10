@@ -1,6 +1,7 @@
 export type ResearchMessageRole = 'USER' | 'ASSISTANT' | 'SYSTEM'
 export type ResearchMessageType = 'TEXT' | 'FILE' | 'PROCESS' | 'ANALYSIS_UPDATE' | 'EVIDENCE_DRAFT'
 export type ReadinessStatus = 'INCOMPLETE' | 'READY'
+export type AnalysisGenerationStatus = 'PENDING' | 'READY' | 'FAILED'
 export type EvidenceCardStatus = 'DRAFT' | 'CONFIRMED'
 export type UploadStatus =
   | 'UPLOADING'

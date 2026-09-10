@@ -146,6 +146,32 @@ class ResourceCreationRepository:
         )
         return self.db.scalars(statement).all()
 
+    def list_latest_project_resources_by_type(
+        self, *, project_id: int, current_user_id: int
+    ) -> Sequence[TeachingResource]:
+        """Return the newest persisted resource with a version for each project type."""
+        statement = (
+            select(TeachingResource)
+            .join(CourseProject, CourseProject.id == TeachingResource.project_id)
+            .where(
+                TeachingResource.project_id == project_id,
+                CourseProject.user_id == current_user_id,
+                CourseProject.is_deleted.is_(False),
+                select(TeachingResourceVersion.id)
+                .where(TeachingResourceVersion.resource_id == TeachingResource.id)
+                .exists(),
+            )
+            .order_by(
+                TeachingResource.resource_type,
+                desc(TeachingResource.updated_at),
+                desc(TeachingResource.id),
+            )
+        )
+        latest_by_type: dict[str, TeachingResource] = {}
+        for resource in self.db.scalars(statement):
+            latest_by_type.setdefault(resource.resource_type, resource)
+        return list(latest_by_type.values())
+
     def create_version(
         self,
         *,

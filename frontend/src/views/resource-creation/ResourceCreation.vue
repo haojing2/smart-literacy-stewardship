@@ -16,7 +16,7 @@ const jobId = ref<number | null>(null)
 const resourceRecords = ref<Record<string, { id: number; versionId?: number; versionNo?: number }>>({})
 const courseInfo = ref({ title: '', grade: '', lessonMinutes: 0, objectiveCount: 0, activityCount: 0, pedagogy: '' })
 const savedResourceJob = ref<any | null>(null)
-const draftViewerVisible = ref(false)
+const settingsViewerVisible = ref(false)
 const apiTypeByUi: Record<string, string> = { ppt: 'PPT', 'teacher-guide': 'TEACHER_GUIDE', worksheet: 'WORKSHEET', 'task-card': 'TASK_CARD', 'ai-case': 'AI_CASE', discussion: 'DISCUSSION', assessment: 'ASSESSMENT', reflection: 'REFLECTION' }
 const uiTypeByApi: Record<string, string> = Object.fromEntries(Object.entries(apiTypeByUi).map(([key, value]) => [value, key]))
 
@@ -177,15 +177,46 @@ function displaySettingValue(value: unknown) {
   return String(value)
 }
 
-function continueEditingDraft() {
-  draftViewerVisible.value = false
-  currentMode.value = 'generate'
-  currentGenerateStep.value = 2
-}
 const activeResource = computed(() => resourceTypes.find((resource) => resource.id === activeResourceId.value) ?? resourceTypes[0])
 const activePreviewResource = computed(() => resourceTypes.find((resource) => resource.id === activePreviewResourceId.value) ?? resourceTypes[0])
 const activeDraft = computed(() => resourceDrafts.value[activePreviewResourceId.value] ?? { title: `${activePreviewResource.value?.title ?? '教学资源'}初稿`, blocks: [{ id: 'generic-1', heading: '资源内容', text: '该资源的初稿内容将在后续版本中完善。' }] })
-const savedDraftCount = computed(() => selectedResources.value.filter((id) => Boolean(resourceRecords.value[id]?.versionId)).length)
+const generatedResourceIds = computed(() => selectedResources.value.filter((id) => Boolean(resourceRecords.value[id]?.versionId)))
+const hasGeneratedResources = computed(() => generatedResourceIds.value.length > 0)
+const ungeneratedResourceIds = computed(() => selectedResources.value.filter((id) => !resourceRecords.value[id]?.versionId))
+const savedDraftCount = computed(() => generatedResourceIds.value.length)
+const generateButtonLabel = computed(() => {
+  if (!ungeneratedResourceIds.value.length) return '进入AI共创'
+  if (generatedResourceIds.value.length) return `生成 ${ungeneratedResourceIds.value.length} 项未生成资源`
+  return '生成资源初稿'
+})
+
+function openGeneratedDraft(resourceId?: string) {
+  settingsViewerVisible.value = false
+  if (!hasGeneratedResources.value) {
+    ElMessage.info('当前还没有已生成的资源初稿')
+    return
+  }
+  currentMode.value = 'generate'
+  currentGenerateStep.value = 3
+  activePreviewResourceId.value = resourceId && generatedResourceIds.value.includes(resourceId)
+    ? resourceId
+    : generatedResourceIds.value[0] || ''
+}
+
+function openGenerationSettings() {
+  settingsViewerVisible.value = true
+}
+
+function returnFromSettingsViewer() {
+  settingsViewerVisible.value = false
+  if (hasGeneratedResources.value) openGeneratedDraft(activePreviewResourceId.value)
+}
+
+function navigateGenerateStep(step: 1 | 2 | 3) {
+  if (step === 2 && !selectedResources.value.length) return
+  if (step === 3) return openGeneratedDraft(activePreviewResourceId.value)
+  currentGenerateStep.value = step
+}
 
 watch(selectedResources, (resources) => {
   if (!resources.includes(activeResourceId.value)) activeResourceId.value = resources[0] ?? ''
@@ -234,6 +265,10 @@ async function applyRecommendedSettings() {
   } catch { isApplyingRecommendations.value = false; ElMessage.error('推荐设置失败') }
 }
 async function generateDraft() {
+  if (!ungeneratedResourceIds.value.length) {
+    openGeneratedDraft()
+    return
+  }
   if (!jobId.value) await saveDraft()
   if (!jobId.value) return
   isGeneratingDraft.value = true
@@ -385,7 +420,6 @@ async function restoreServerState() {
   savedResourceJob.value = job || null
   if (job) {
     currentMode.value = job.mode === 'COURSE_GENERATE' ? 'generate' : 'adapt'
-    currentGenerateStep.value = job.currentStep || 1
     selectedResources.value = (job.selectedTypes || []).map((item: string) => uiTypeByApi[item]).filter(Boolean)
     Object.assign(commonSettings, job.commonSettings || {})
     Object.assign(resourceSettings, job.resourceSettings || {})
@@ -402,9 +436,20 @@ async function restoreServerState() {
     if (detail.currentVersion?.content) resourceDrafts.value[uiType] = fromServerContent(detail.currentVersion.content)
     assistantSuggestions.value.push(...(detail.suggestions || []).map((item: any) => ({ id: item.suggestionId, text: item.suggestedContent || item.reason || '', status: item.status === 'PENDING' ? 'pending' : item.status === 'REJECTED' ? 'ignored' : 'applied' })))
   }
-  activePreviewResourceId.value = selectedResources.value.includes(previousActivePreviewId)
+  // TeachingResourceVersion is project state and can belong to an older job.
+  selectedResources.value = Array.from(new Set([
+    ...selectedResources.value,
+    ...Object.keys(resourceRecords.value).filter((id) => Boolean(resourceRecords.value[id]?.versionId)),
+  ]))
+  activePreviewResourceId.value = generatedResourceIds.value.includes(previousActivePreviewId)
     ? previousActivePreviewId
-    : selectedResources.value.find((id) => Boolean(resourceRecords.value[id]?.versionId)) || selectedResources.value[0] || ''
+    : generatedResourceIds.value[0] || selectedResources.value[0] || ''
+  if (hasGeneratedResources.value) {
+    currentMode.value = 'generate'
+    currentGenerateStep.value = 3
+  } else if (job) {
+    currentGenerateStep.value = job.currentStep || 1
+  }
 }
 async function initialize() {
   if (!projectId.value) return
@@ -425,7 +470,7 @@ onMounted(() => { void initialize() })
         <h1>资源智创</h1>
         <p class="page-description">将教学设计转化为可直接使用的课堂资源，并通过教师—AI协同持续优化。</p>
       </div>
-      <div class="save-area"><div class="save-buttons"><el-button :disabled="!savedResourceJob" @click="draftViewerVisible = true">查看草稿</el-button><el-button type="primary" @click="saveDraft">保存草稿</el-button></div><span>{{ saveStatus }}</span></div>
+      <div class="save-area"><div class="save-buttons"><el-button :disabled="!hasGeneratedResources" @click="openGeneratedDraft()">查看草稿</el-button><el-button :disabled="!savedResourceJob" @click="openGenerationSettings">查看生成设置</el-button><el-button type="primary" @click="saveDraft">保存草稿</el-button></div><span>{{ saveStatus }}</span></div>
     </header>
 
     <section v-if="!currentMode" class="mode-section" aria-label="资源智创工作模式">
@@ -447,7 +492,7 @@ onMounted(() => { void initialize() })
     </section>
 
     <template v-else-if="currentMode === 'generate'">
-      <nav class="creation-flow" aria-label="资源生成流程"><span :class="{ active: currentGenerateStep === 1 }">选择资源</span><i>→</i><span :class="{ active: currentGenerateStep === 2 }">生成设置</span><i>→</i><span :class="{ active: currentGenerateStep === 3 }">AI共创</span><i>→</i><span>预览导出</span></nav>
+      <nav class="creation-flow" aria-label="资源生成流程"><button :class="{ active: currentGenerateStep === 1, completed: currentGenerateStep > 1 }" @click="navigateGenerateStep(1)">{{ currentGenerateStep > 1 ? '✓' : '●' }} 选择资源</button><i>→</i><button :disabled="!selectedResources.length" :class="{ active: currentGenerateStep === 2, completed: currentGenerateStep > 2 }" @click="navigateGenerateStep(2)">{{ currentGenerateStep > 2 ? '✓' : currentGenerateStep === 2 ? '●' : '○' }} 生成设置</button><i>→</i><button :disabled="!hasGeneratedResources" :class="{ active: currentGenerateStep === 3 }" @click="navigateGenerateStep(3)">{{ currentGenerateStep === 3 ? '●' : '○' }} AI共创</button><i>→</i><span>○ 预览导出</span></nav>
 
       <section v-if="currentGenerateStep === 1" class="generate-workspace">
         <article class="current-course-card">
@@ -461,7 +506,7 @@ onMounted(() => { void initialize() })
           <div class="resource-grid">
             <article v-for="resource in resourceTypes" :key="resource.id" class="resource-card" :class="[`resource-card--${resource.id}`, { selected: selectedResources.includes(resource.id) }]" role="checkbox" tabindex="0" :aria-checked="selectedResources.includes(resource.id)" @click="toggleResource(resource.id)" @keydown.space.prevent="toggleResource(resource.id)" @keydown.enter.prevent="toggleResource(resource.id)">
               <header><span class="resource-icon" aria-hidden="true">{{ resource.icon }}</span><el-checkbox :model-value="selectedResources.includes(resource.id)" :aria-label="`选择${resource.title}`" @click.stop @change="toggleResource(resource.id)" /></header>
-              <h3>{{ resource.title }}</h3><p>{{ resource.description }}</p>
+              <h3>{{ resource.title }}</h3><p>{{ resource.description }}</p><div class="resource-generation-status" :class="{ generated: Boolean(resourceRecords[resource.id]?.versionId) }"><span>{{ resourceRecords[resource.id]?.versionId ? `已生成 · v${resourceRecords[resource.id]?.versionNo || 1}` : '尚未生成' }}</span><el-button v-if="resourceRecords[resource.id]?.versionId" link type="primary" @click.stop="openGeneratedDraft(resource.id)">查看</el-button></div>
             </article>
           </div>
           <footer class="selection-actions"><el-button @click="returnToModeSelection">返回模式选择</el-button><el-button type="primary" :disabled="selectedResources.length === 0" @click="currentGenerateStep = 2">下一步：设置生成条件</el-button></footer>
@@ -494,13 +539,13 @@ onMounted(() => { void initialize() })
             <el-form v-else class="exclusive-form" label-position="top"><el-form-item label="内容详细程度"><el-radio-group v-model="resourceSettings['teacher-guide'].detail"><el-radio-button label="简洁" value="简洁" /><el-radio-button label="适中" value="适中" /><el-radio-button label="详细" value="详细" /></el-radio-group></el-form-item><el-form-item label="包含时间提示"><el-switch v-model="resourceSettings['teacher-guide'].timing" /></el-form-item><el-form-item label="包含教学提示"><el-switch v-model="resourceSettings['teacher-guide'].prompts" /></el-form-item></el-form>
           </article>
         </section>
-        <footer class="settings-actions"><el-button @click="currentGenerateStep = 1">返回选择资源</el-button><div><span v-if="isGeneratingDraft">正在根据课程设计和资源要求生成初稿…</span><el-button type="primary" :loading="isGeneratingDraft" @click="generateDraft">生成资源初稿</el-button></div></footer>
+        <footer class="settings-actions"><el-button @click="currentGenerateStep = 1">返回选择资源</el-button><div><span v-if="isGeneratingDraft">正在根据课程设计和资源要求生成初稿…</span><el-button type="primary" :loading="isGeneratingDraft" @click="generateDraft">{{ generateButtonLabel }}</el-button></div></footer>
       </section>
 
       <section v-else class="draft-stage">
         <header class="draft-header"><div><p class="section-eyebrow">资源初稿已生成</p><h2>资源预览与编辑</h2><p>{{ savedDraftCount }}项已保存 · {{ selectedResources.length }}项已选择 · 基于当前课程方案生成</p></div><el-button :loading="isRegeneratingAll" @click="regenerateAllDrafts">重新生成全部</el-button></header>
         <section class="draft-workspace">
-          <aside class="draft-resource-list"><h2>资源列表</h2><button v-for="resource in resourceTypes.filter((item) => selectedResources.includes(item.id))" :key="resource.id" :class="{ active: activePreviewResourceId === resource.id }" @click="activePreviewResourceId = resource.id"><span>{{ resource.icon }}</span><div><strong>{{ resource.title }}</strong><small>{{ resourceRecords[resource.id]?.versionId ? `已保存 · v${resourceRecords[resource.id]?.versionNo || 1}` : '示例预览' }}</small></div></button></aside>
+          <aside class="draft-resource-list"><h2>资源列表</h2><button v-for="resource in resourceTypes.filter((item) => generatedResourceIds.includes(item.id))" :key="resource.id" :class="{ active: activePreviewResourceId === resource.id }" @click="activePreviewResourceId = resource.id"><span>{{ resource.icon }}</span><div><strong>{{ resource.title }}</strong><small>{{ `已保存 · v${resourceRecords[resource.id]?.versionNo || 1}` }}</small></div></button></aside>
           <article class="draft-editor">
             <header class="editor-header"><div><p class="section-eyebrow">当前资源</p><h2>{{ activeDraft.title }}</h2><span v-if="teacherModified" class="modified-tag">教师已修改</span></div><div class="editor-actions"><el-button @click="assistantVisible = true">AI共创助手</el-button><el-button v-if="!isEditingDraft" @click="startEditingDraft">编辑</el-button><template v-else><el-button @click="cancelDraftEdits">取消</el-button><el-button type="primary" @click="saveDraftEdits">保存修改</el-button></template></div></header>
             <section class="draft-content">
@@ -521,14 +566,14 @@ onMounted(() => { void initialize() })
   </main>
 
   <el-dialog v-model="coursePlanVisible" title="课程方案" width="520px"><p class="course-plan-dialog">当前课程方案包含 {{ courseInfo.objectiveCount }} 个学习目标、{{ courseInfo.activityCount }} 个教学环节及对应评价设计。</p></el-dialog>
-  <el-drawer v-model="draftViewerVisible" title="资源智创草稿" size="min(560px, 94vw)" class="draft-viewer-drawer">
+  <el-drawer v-model="settingsViewerVisible" title="资源生成设置" size="min(560px, 94vw)" class="draft-viewer-drawer">
     <div v-if="savedResourceJob" class="draft-viewer">
       <section class="draft-summary"><div><span>当前状态</span><strong>{{ savedJobStatus }}</strong></div><div><span>最近更新时间</span><strong>{{ savedJobUpdatedAt }}</strong></div><div><span>当前步骤</span><strong>第 {{ savedResourceJob.currentStep }} 步</strong></div></section>
       <section class="draft-viewer-section"><h3>已选择资源</h3><div class="draft-type-list"><span v-for="resource in savedSelectedResources" :key="resource.apiType">{{ resource.title }}</span><p v-if="!savedSelectedResources.length">尚未选择资源</p></div></section>
       <section class="draft-viewer-section"><h3>通用生成条件</h3><dl v-if="savedCommonSettings.length" class="draft-setting-list"><div v-for="setting in savedCommonSettings" :key="setting.key"><dt>{{ setting.label }}</dt><dd>{{ setting.value }}</dd></div></dl><p v-else class="draft-empty">尚未保存通用生成条件</p></section>
       <section class="draft-viewer-section"><h3>各资源专属设置</h3><div class="draft-specific-list"><article v-for="resource in savedResourceSettings" :key="resource.apiType"><h4>{{ resource.title }}</h4><dl v-if="resource.settings.length" class="draft-setting-list"><div v-for="setting in resource.settings" :key="setting.key"><dt>{{ setting.label }}</dt><dd>{{ setting.value }}</dd></div></dl><p v-else class="draft-empty">使用默认设置</p></article></div></section>
     </div>
-    <template #footer><div class="draft-viewer-actions"><el-button @click="draftViewerVisible = false">关闭</el-button><el-button type="primary" @click="continueEditingDraft">继续编辑</el-button></div></template>
+    <template #footer><div class="draft-viewer-actions"><el-button @click="settingsViewerVisible = false">关闭</el-button><el-button v-if="hasGeneratedResources" type="primary" @click="returnFromSettingsViewer">返回资源</el-button></div></template>
   </el-drawer>
   <el-drawer v-model="assistantVisible" title="AI共创助手" size="min(420px, 92vw)">
     <div class="assistant-panel">
@@ -545,7 +590,7 @@ onMounted(() => { void initialize() })
 .resource-creation-page { width: 100%; max-width: 1400px; min-height: 100%; margin: 0 auto; color: #101828; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; padding: 4px 2px 28px; }.eyebrow { margin: 0 0 7px; color: #1677ff; font-size: 13px; font-weight: 650; }h1 { margin: 0; color: #101828; font-size: 27px; font-weight: 650; letter-spacing: -.02em; }.page-description { margin: 10px 0 0; color: #667085; font-size: 14px; line-height: 1.65; }.save-area { display: flex; flex: none; align-items: center; gap: 10px; padding-top: 17px; }.save-area>span { color: #98a2b3; font-size: 13px; white-space: nowrap; }.save-buttons { display: flex; align-items: center; gap: 8px; }.save-buttons :deep(.el-button) { margin: 0; }
 .mode-section, .mode-placeholder { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.mode-section { padding: 28px; }.section-intro h2, .mode-placeholder h2 { margin: 0; color: #1d2939; font-size: 18px; font-weight: 650; }.section-intro p { margin: 8px 0 0; color: #667085; font-size: 14px; }.mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 25px; }.mode-card { display: flex; min-height: 285px; flex-direction: column; padding: 24px; border: 1px solid #eaecf0; border-radius: 12px; background: #fff; transition: border-color .18s ease, box-shadow .18s ease; }.mode-card:hover { border-color: #bcd6f5; box-shadow: 0 5px 15px rgb(16 24 40 / 6%); }.mode-card.recommended { border-color: #d4e5f9; background: #fbfdff; }.mode-card header { display: flex; align-items: center; justify-content: space-between; }.mode-icon { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #dbe8f8; border-radius: 11px; color: #1677ff; background: #edf5ff; font-size: 21px; }.adapt-icon { color: #4774a8; background: #f4f8fd; }.recommendation-label { padding: 4px 9px; border-radius: 10px; color: #4774a8; background: #edf5ff; font-size: 11px; }.mode-card h3 { margin: 22px 0 0; color: #1d2939; font-size: 18px; font-weight: 650; }.mode-card p { max-width: 470px; margin: 10px 0 0; color: #667085; font-size: 14px; line-height: 1.75; }.mode-card footer { margin-top: auto; padding-top: 24px; }.mode-placeholder { display: grid; min-height: 365px; place-content: center; padding: 34px 20px; text-align: center; }.placeholder-icon { display: grid; width: 48px; height: 48px; margin: 0 auto 16px; place-items: center; border: 1px solid #dbe8f8; border-radius: 13px; color: #1677ff; background: #edf5ff; font-size: 23px; }.mode-placeholder p { margin: 9px 0 21px; color: #667085; font-size: 14px; }
-.creation-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; padding: 13px 17px; border: 1px solid #e6eef8; border-radius: 10px; color: #98a2b3; background: #fff; font-size: 13px; }.creation-flow span.active { color: #1677ff; font-weight: 650; }.creation-flow i { color: #c7d7e9; font-style: normal; }.generate-workspace { display: grid; gap: 18px; }.current-course-card, .resource-selection-card { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.current-course-card { padding: 22px 24px; }.current-course-card header, .selection-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }.section-eyebrow { margin: 0 0 6px; color: #1677ff; font-size: 12px; font-weight: 650; }.current-course-card h2, .selection-header h2 { margin: 0; color: #1d2939; font-size: 17px; font-weight: 650; }.course-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }.course-meta span { padding: 4px 8px; border-radius: 5px; color: #4774a8; background: #edf5ff; font-size: 12px; }.current-course-card>p { margin: 13px 0 0; color: #667085; font-size: 13px; }.resource-selection-card { padding: 24px; }.selection-header p { margin: 8px 0 0; color: #667085; font-size: 13px; }.batch-actions { display: flex; flex: none; gap: 9px; }.batch-actions :deep(.el-button) { margin: 0; }.resource-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }.resource-card { min-height: 178px; padding: 15px; border: 1px solid #eaecf0; border-radius: 10px; background: #fff; cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease; }.resource-card:hover { border-color: #bdd7f5; }.resource-card.selected { border-color: #8bbcf4; background: #f8fbff; box-shadow: 0 0 0 2px rgb(22 119 255 / 5%); }.resource-card header { display: flex; align-items: flex-start; justify-content: space-between; }.resource-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 8px; color: #1677ff; background: #edf5ff; font-size: 15px; }.resource-card h3 { margin: 15px 0 0; color: #344054; font-size: 14px; font-weight: 650; }.resource-card p { margin: 7px 0 0; color: #667085; font-size: 12px; line-height: 1.65; }.selection-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; padding-top: 18px; border-top: 1px solid #edf0f3; }.course-plan-dialog { margin: 0; color: #667085; font-size: 14px; line-height: 1.75; }
+.creation-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; padding: 13px 17px; border: 1px solid #e6eef8; border-radius: 10px; color: #98a2b3; background: #fff; font-size: 13px; }.creation-flow button { padding: 2px 4px; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; }.creation-flow button:hover:not(:disabled), .creation-flow button.active { color: #1677ff; font-weight: 650; }.creation-flow button.completed { color: #4774a8; }.creation-flow button:disabled { color: #c4cbd4; cursor: not-allowed; }.creation-flow i { color: #c7d7e9; font-style: normal; }.generate-workspace { display: grid; gap: 18px; }.current-course-card, .resource-selection-card { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.current-course-card { padding: 22px 24px; }.current-course-card header, .selection-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }.section-eyebrow { margin: 0 0 6px; color: #1677ff; font-size: 12px; font-weight: 650; }.current-course-card h2, .selection-header h2 { margin: 0; color: #1d2939; font-size: 17px; font-weight: 650; }.course-meta { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }.course-meta span { padding: 4px 8px; border-radius: 5px; color: #4774a8; background: #edf5ff; font-size: 12px; }.current-course-card>p { margin: 13px 0 0; color: #667085; font-size: 13px; }.resource-selection-card { padding: 24px; }.selection-header p { margin: 8px 0 0; color: #667085; font-size: 13px; }.batch-actions { display: flex; flex: none; gap: 9px; }.batch-actions :deep(.el-button) { margin: 0; }.resource-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }.resource-card { min-height: 178px; padding: 15px; border: 1px solid #eaecf0; border-radius: 10px; background: #fff; cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease; }.resource-card:hover { border-color: #bdd7f5; }.resource-card.selected { border-color: #8bbcf4; background: #f8fbff; box-shadow: 0 0 0 2px rgb(22 119 255 / 5%); }.resource-card header { display: flex; align-items: flex-start; justify-content: space-between; }.resource-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 8px; color: #1677ff; background: #edf5ff; font-size: 15px; }.resource-card h3 { margin: 15px 0 0; color: #344054; font-size: 14px; font-weight: 650; }.resource-card p { margin: 7px 0 0; color: #667085; font-size: 12px; line-height: 1.65; }.resource-generation-status { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; color: #98a2b3; font-size: 12px; }.resource-generation-status.generated { color: #438566; }.resource-generation-status :deep(.el-button) { height: auto; padding: 0; }.selection-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; padding-top: 18px; border-top: 1px solid #edf0f3; }.course-plan-dialog { margin: 0; color: #667085; font-size: 14px; line-height: 1.75; }
 .settings-workspace { display: grid; gap: 18px; }.common-settings-card, .selected-resource-list, .exclusive-settings-card { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.common-settings-card { padding: 23px 24px; }.common-settings-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }.common-settings-card h2, .selected-resource-list h2, .exclusive-settings-card h2 { margin: 0; color: #1d2939; font-size: 17px; font-weight: 650; }.recommendation-notice { margin: 15px 0 0; padding: 9px 11px; border-radius: 7px; color: #4774a8; background: #f4f8fd; font-size: 13px; }.common-settings-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; margin-top: 21px; }.common-settings-form :deep(.el-form-item), .exclusive-form :deep(.el-form-item) { margin-bottom: 16px; }.common-settings-form :deep(.el-form-item__label), .exclusive-form :deep(.el-form-item__label) { padding-bottom: 6px; color: #344054; font-size: 13px; font-weight: 600; }.common-settings-form :deep(.el-select), .common-settings-form :deep(.el-radio-group), .common-settings-form :deep(.el-input) { width: 100%; }.resource-settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; }.selected-resource-list { display: grid; align-content: start; gap: 4px; padding: 19px 13px; }.selected-resource-list h2 { padding: 0 8px 10px; font-size: 15px; }.selected-resource-list button { display: flex; align-items: center; gap: 9px; padding: 10px 9px; border: 0; border-radius: 7px; color: #475467; background: transparent; cursor: pointer; font: inherit; font-size: 13px; text-align: left; }.selected-resource-list button:hover, .selected-resource-list button.active { color: #1677ff; background: #edf5ff; }.selected-resource-list button span { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 6px; color: #4774a8; background: #f4f8fd; font-size: 12px; }.exclusive-settings-card { min-height: 310px; padding: 23px 24px; }.exclusive-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; margin-top: 20px; }.exclusive-form :deep(.el-select), .exclusive-form :deep(.el-input), .exclusive-form :deep(.el-input-number) { width: 100%; }.settings-actions { display: flex; align-items: center; justify-content: space-between; padding-top: 3px; }.settings-actions>div { display: flex; align-items: center; gap: 12px; }.settings-actions span { color: #667085; font-size: 13px; }.generate-placeholder { min-height: 420px; }
 .draft-stage { display: grid; gap: 18px; }.draft-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 22px 24px; border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.draft-header h2, .draft-resource-list h2, .editor-header h2 { margin: 0; color: #1d2939; font-size: 18px; font-weight: 650; }.draft-header>div>p:last-child { margin: 7px 0 0; color: #667085; font-size: 13px; }.draft-workspace { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; min-width: 0; }.draft-resource-list, .draft-editor { border: 1px solid #eaecf0; border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgb(16 24 40 / 4%); }.draft-resource-list { display: grid; align-content: start; gap: 5px; padding: 19px 13px; }.draft-resource-list h2 { padding: 0 8px 10px; font-size: 15px; }.draft-resource-list button { display: flex; align-items: center; gap: 9px; padding: 11px 9px; border: 0; border-radius: 8px; color: #475467; background: transparent; cursor: pointer; font: inherit; text-align: left; }.draft-resource-list button:hover, .draft-resource-list button.active { color: #1677ff; background: #edf5ff; }.draft-resource-list button>span { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 7px; color: #4774a8; background: #f4f8fd; font-size: 13px; }.draft-resource-list strong, .draft-resource-list small { display: block; }.draft-resource-list strong { font-size: 13px; font-weight: 600; }.draft-resource-list small { margin-top: 2px; color: #98a2b3; font-size: 11px; }.draft-editor { min-width: 0; padding: 23px 24px; }.editor-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid #edf0f3; }.modified-tag { display: inline-block; margin-top: 8px; padding: 3px 8px; border-radius: 9px; color: #4774a8; background: #edf5ff; font-size: 11px; }.editor-actions { display: flex; align-items: center; gap: 10px; }.assistant-reserved { color: #98a2b3; font-size: 12px; white-space: nowrap; }.editor-actions :deep(.el-button) { margin: 0; }.draft-content { display: grid; gap: 13px; margin-top: 19px; }.draft-block { padding: 16px 17px; border: 1px solid #eaecf0; border-radius: 9px; }.draft-block>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.draft-block h3 { margin: 0; color: #344054; font-size: 14px; font-weight: 650; }.draft-block p { margin: 9px 0 0; color: #667085; font-size: 14px; line-height: 1.7; }.draft-block :deep(.el-textarea) { display: block; margin-top: 10px; }.block-menu { width: 30px; height: 27px; border: 1px solid #eaecf0; border-radius: 6px; color: #667085; background: #fff; cursor: pointer; font: inherit; font-weight: 700; line-height: 1; }.block-menu:hover { color: #1677ff; background: #f8fbff; }.block-loading { display: block; margin-top: 8px; color: #1677ff; font-size: 12px; }.mock-table { margin-top: 13px; overflow: hidden; border: 1px solid #e6eef8; border-radius: 7px; color: #667085; font-size: 12px; }.mock-table div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }.mock-table div+div { border-top: 1px solid #e6eef8; }.mock-table span { padding: 8px; border-right: 1px solid #e6eef8; }.mock-table span:last-child { border-right: 0; }.mock-table div:first-child { color: #475467; background: #f8fbff; font-weight: 600; }.draft-footer { padding: 0; }
 .assistant-panel { padding: 0 2px 24px; }.assistant-intro { margin: 0 0 19px; color: #667085; font-size: 13px; line-height: 1.7; }.assistant-section { padding: 17px 0; border-top: 1px solid #edf0f3; }.assistant-section:first-of-type { border-top: 0; padding-top: 0; }.assistant-section>header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.assistant-section h3, .proposal-card h3 { margin: 0; color: #344054; font-size: 15px; font-weight: 650; }.check-result { margin-top: 13px; padding: 12px; border-radius: 8px; background: #f8fbff; }.check-result p { display: flex; align-items: center; justify-content: space-between; margin: 7px 0; color: #667085; font-size: 13px; }.check-result strong { color: #438566; font-weight: 600; }.check-result em { color: #b7791f; font-style: normal; }.check-result blockquote { margin: 13px 0 0; padding: 10px 11px; border-left: 2px solid #9cc5f6; color: #475467; background: #fff; font-size: 13px; line-height: 1.65; }.assistant-suggestion { padding: 12px 0; border-bottom: 1px solid #edf0f3; }.assistant-suggestion p { margin: 0; color: #475467; font-size: 13px; line-height: 1.6; }.assistant-suggestion>div { display: flex; align-items: center; gap: 5px; margin-top: 5px; }.assistant-suggestion>div span { color: #98a2b3; font-size: 12px; }.assistant-suggestion.proposed>div span, .assistant-suggestion.applied>div span { color: #4774a8; }.assistant-section :deep(.el-textarea) { margin-top: 12px; }.request-button { margin: 10px 0 0; }.proposal-card { margin-top: 6px; padding: 16px; border: 1px solid #dbe8f8; border-radius: 10px; background: #fbfdff; }.proposal-card h3 { margin-top: 5px; }.proposal-card>div { margin-top: 14px; }.proposal-card strong { color: #475467; font-size: 12px; }.proposal-card p { margin: 6px 0 0; color: #667085; font-size: 13px; line-height: 1.65; }.proposal-card>div:last-of-type { padding: 11px; border-radius: 7px; background: #edf5ff; }.proposal-card footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }.proposal-card footer :deep(.el-button) { margin: 0; }

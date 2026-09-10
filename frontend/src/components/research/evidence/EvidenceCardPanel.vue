@@ -30,17 +30,17 @@ async function confirm() {
     </div>
     <div class="evidence-content">
       <section><h3>研究发现</h3><p>{{ evidence.researchFinding || '—' }}</p></section>
-      <section><h3>适用对象</h3><p>{{ evidence.applicableAudience || '—' }}</p></section>
-      <section><h3>推荐策略</h3><ul><li v-for="item in evidence.recommendedStrategies" :key="item">{{ item }}</li><li v-if="!evidence.recommendedStrategies.length">—</li></ul></section>
-      <section><h3>实施条件</h3><ul><li v-for="item in evidence.implementationConditions" :key="item">{{ item }}</li><li v-if="!evidence.implementationConditions.length">—</li></ul></section>
-      <section><h3>教学转化建议</h3><p>{{ evidence.teachingImplications || '—' }}</p></section>
-      <section><h3>研究局限</h3><p>{{ evidence.limitations || '—' }}</p></section>
+      <section><h3>适用对象</h3><p>{{ evidence.applicableAudience || '论文当前未识别' }}</p></section>
+      <section><h3>推荐策略</h3><ul><li v-for="item in evidence.recommendedStrategies" :key="item">{{ item }}</li><li v-if="!evidence.recommendedStrategies.length">论文当前未识别</li></ul></section>
+      <section><h3>实施条件</h3><ul><li v-for="item in evidence.implementationConditions" :key="item">{{ item }}</li><li v-if="!evidence.implementationConditions.length">论文当前未识别</li></ul></section>
+      <section><h3>教学转化建议</h3><p>{{ evidence.teachingImplications || '论文当前未识别' }}</p></section>
+      <section><h3>研究局限</h3><p>{{ evidence.limitations || '论文当前未识别' }}</p></section>
       <section><h3>原始文献来源</h3><p>{{ evidence.sourceDocument }}<br><small>追溯标识：{{ evidence.sourceTraceId }}</small></p></section>
     </div>
     <footer class="evidence-actions">
       <template v-if="evidence.status === 'DRAFT'">
         <el-button @click="editing = true">编辑</el-button>
-        <el-button type="primary" :loading="confirming" @click="confirm">确认并保存证据卡</el-button>
+        <el-button type="primary" :loading="confirming" :disabled="confirming" @click="confirm">确认并保存证据卡</el-button>
       </template>
       <span v-else>✓ 已保存为正式研究证据</span>
     </footer>

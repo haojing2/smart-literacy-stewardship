@@ -78,12 +78,8 @@ class ResourceCreationService:
         job = self.repository.get_latest_job(
             project_id=project_id, current_user_id=current_user_id
         )
-        resources = (
-            self.repository.list_resources(
-                project_id=project_id, current_user_id=current_user_id, job_id=job.id
-            )
-            if job is not None
-            else []
+        resources = self.repository.list_latest_project_resources_by_type(
+            project_id=project_id, current_user_id=current_user_id
         )
         return {
             "job": self._job_view(job) if job is not None else None,
@@ -197,16 +193,30 @@ class ResourceCreationService:
             raise ValueError("At least one resource type must be selected")
 
         try:
-            generated: list[TeachingResource] = []
-            existing = {
+            resources: list[TeachingResource] = []
+            project_resources = {
+                item.resource_type: item
+                for item in self.repository.list_latest_project_resources_by_type(
+                    project_id=project_id, current_user_id=current_user_id
+                )
+            }
+            job_resources = {
                 item.resource_type: item
                 for item in self.repository.list_resources(
                     project_id=project_id, current_user_id=current_user_id, job_id=job.id
                 )
             }
             for resource_type in selected_types:
+                resource = project_resources.get(resource_type)
+                if resource is not None and not regenerate:
+                    # A persisted version is the source of truth. Ordinary generation is
+                    # deliberately idempotent and must never replace teacher/AI edits.
+                    resources.append(resource)
+                    continue
                 if ResourceType(resource_type) == ResourceType.PPT:
                     # PPT is intentionally reserved for its dedicated model/API.
+                    if resource is not None:
+                        resources.append(resource)
                     continue
                 failure_stage = "prompt_build"
                 provider_request = ResourceGenerationContextService(self.db).build(
@@ -233,7 +243,7 @@ class ResourceCreationService:
                 })
                 content = generated_result.content.model_dump(mode="json", by_alias=True)
                 failure_stage = "database_save"
-                resource = existing.get(resource_type)
+                resource = resource or job_resources.get(resource_type)
                 if resource is None:
                     resource = self.repository.create_resource(
                         job_id=job.id,
@@ -264,13 +274,13 @@ class ResourceCreationService:
                 )
                 if version is None:
                     raise ResourceCreationJobNotFoundError("Teaching resource was not found")
-                generated.append(resource)
+                resources.append(resource)
 
             job.status = "READY"
             job.current_step = 3
             job.error_message = None
             self.db.commit()
-            for item in generated:
+            for item in resources:
                 self.db.refresh(item)
             self.db.refresh(job)
         except Exception as exc:
@@ -283,7 +293,7 @@ class ResourceCreationService:
             raise
         return {
             "job": self._job_view(job),
-            "resources": [self._resource_view(item) for item in generated],
+            "resources": [self._resource_view(item) for item in resources],
         }
 
     def get_resource_detail(

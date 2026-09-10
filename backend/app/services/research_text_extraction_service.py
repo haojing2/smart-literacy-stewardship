@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,7 @@ from app.repositories.research_resource_repository import ResearchResourceReposi
 from app.services.document_parser_service import (
     DocumentParserService,
     DocumentParsingError,
+    PDF_MIME_TYPE,
 )
 from app.services.knowledge_base_path_service import KnowledgeBasePathService
 
@@ -20,6 +23,9 @@ class ResearchResourceNotFoundError(LookupError):
 
 class TextExtractionInProgressError(RuntimeError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchTextExtractionService:
@@ -59,10 +65,29 @@ class ResearchTextExtractionService:
 
         try:
             file_path = self._resolve_file_path(storage_key)
-            extracted_text = self.parser.parse(
-                path=file_path,
-                mime_type=mime_type,
-            )
+            parser_engine = "DOCUMENT_PARSER"
+            if mime_type == PDF_MIME_TYPE:
+                try:
+                    extracted_text = self.parser.parse_pdf_to_markdown(
+                        project_id=resource.project_id,
+                        pdf_path=file_path,
+                    )
+                    parser_engine = "PYMUPDF4LLM"
+                except DocumentParsingError:
+                    logger.warning(
+                        "Primary PDF parser failed; using fallback project_id=%s "
+                        "resource_id=%s filename=%s parser_engine=PYPDF_FALLBACK",
+                        resource.project_id,
+                        resource.id,
+                        resource.original_filename,
+                        exc_info=True,
+                    )
+                    extracted_text = self.parser.parse(
+                        path=file_path, mime_type=mime_type
+                    )
+                    parser_engine = "PYPDF_FALLBACK"
+            else:
+                extracted_text = self.parser.parse(path=file_path, mime_type=mime_type)
         except DocumentParsingError as exc:
             self._mark_failed(resource, str(exc))
             raise
@@ -72,6 +97,18 @@ class ResearchTextExtractionService:
             )
             self._mark_failed(resource, str(error))
             raise error from exc
+
+        logger.info(
+            "Research text extracted project_id=%s resource_id=%s filename=%s "
+            "parser_engine=%s extracted_chars=%s line_count=%s heading_count=%s",
+            resource.project_id,
+            resource.id,
+            resource.original_filename,
+            parser_engine,
+            len(extracted_text),
+            len(extracted_text.splitlines()),
+            len(re.findall(r"(?m)^#{1,6}\\s+", extracted_text)),
+        )
 
         try:
             self.repository.mark_text_extracted(

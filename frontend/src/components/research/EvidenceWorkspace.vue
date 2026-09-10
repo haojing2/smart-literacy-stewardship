@@ -14,12 +14,16 @@ const props = defineProps<{
   generatingEvidence: boolean
   savingEvidence: boolean
   confirmingEvidence: boolean
+  analysisGenerationStatus: 'PENDING' | 'READY' | 'FAILED' | null
+  analysisScope: 'PROJECT' | 'RESOURCE'
+  analysisSource: string
 }>()
 defineEmits<{
   saveAnalysis: [analysis: ResearchAnalysis]
   confirmAnalysis: []
   saveEvidence: [payload: EvidenceCardEditableFields]
   confirmEvidence: []
+  reanalyze: []
 }>()
 const activeTab = ref('analysis')
 watch(() => props.evidence, (evidence, previous) => {
@@ -32,7 +36,7 @@ watch(() => props.evidence, (evidence, previous) => {
   <aside class="evidence-workspace">
     <el-tabs v-model="activeTab" class="workspace-tabs">
       <el-tab-pane label="研究解析" name="analysis">
-        <ResearchAnalysisPanel :analysis="analysis" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving="savingAnalysis" @save="$emit('saveAnalysis', $event)" @confirm="$emit('confirmAnalysis')" />
+        <ResearchAnalysisPanel :analysis="analysis" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving="savingAnalysis" :generation-status="analysisGenerationStatus" :scope="analysisScope" :source-label="analysisSource" @save="$emit('saveAnalysis', $event)" @confirm="$emit('confirmAnalysis')" @reanalyze="$emit('reanalyze')" />
       </el-tab-pane>
       <el-tab-pane name="evidence">
         <template #label><span class="evidence-tab-label">证据卡<i v-if="evidence && evidence.status === 'DRAFT'"></i></span></template>

@@ -8,6 +8,8 @@ from app.schemas.research_assistant import (
     EvidenceCardGenerationResponse,
     ResearchAnalysisRequest,
     ResearchAnalysisResponse,
+    ResearchAnalysisSupplementRequest,
+    ResearchAnalysisSupplementResponse,
     ResearchChatRequest,
     ResearchChatResponse,
 )
@@ -53,6 +55,12 @@ class ResearchAssistantProvider(ABC):
     async def analyze_research(
         self, request: ResearchAnalysisRequest
     ) -> ResearchAnalysisResponse:
+        raise NotImplementedError
+
+    async def supplement_research_analysis(
+        self, request: ResearchAnalysisSupplementRequest
+    ) -> ResearchAnalysisSupplementResponse:
+        """Fill requested missing fields without rewriting a full analysis."""
         raise NotImplementedError
 
     @abstractmethod

@@ -10,6 +10,8 @@ from app.api.dependencies import get_current_user
 from app.agents.research.base import ResearchAgentProvider
 from app.agents.research.errors import ResearchAgentError
 from app.agents.research.factory import build_research_agent_provider
+from app.assistants.base import ResearchAssistantProvider
+from app.assistants.factory import build_research_assistant_provider
 from app.core.responses import success_response
 from app.db.dependencies import get_db
 from app.models.user import SysUser
@@ -42,6 +44,10 @@ def get_research_agent_provider() -> ResearchAgentProvider:
     return build_research_agent_provider()
 
 
+def get_research_analysis_provider() -> ResearchAssistantProvider:
+    return build_research_assistant_provider()
+
+
 def _analysis_response(result: ResearchAnalysisVersionResponse):
     return success_response(result.model_dump(by_alias=True, mode="json"))
 
@@ -56,9 +62,12 @@ async def create_research_chat_session(
     current_user: SysUser = Depends(get_current_user),
     db: Session = Depends(get_db),
     provider: ResearchAgentProvider = Depends(get_research_agent_provider),
+    analysis_provider: ResearchAssistantProvider = Depends(get_research_analysis_provider),
 ):
     try:
-        result = await ResearchChatService(db, provider).create_session(
+        result = await ResearchChatService(
+            db, provider, analysis_provider=analysis_provider
+        ).create_session(
             current_user_id=current_user.id,
             project_id=project_id,
             request=payload,

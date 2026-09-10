@@ -60,6 +60,13 @@ class ResearchAnalysisPatch(ResearchAssistantSchema):
     teaching_implications: str | None = None
 
 
+class ResearchAnalysisSupplementRequest(ResearchAssistantSchema):
+    resource_id: int = Field(gt=0)
+    missing_fields: list[str] = Field(min_length=1)
+    analysis_evidence: str = Field(min_length=1)
+    current_analysis: ResearchAnalysisResult
+
+
 class ResearchChatMessageInput(ResearchAssistantSchema):
     role: Literal["USER", "SYSTEM", "ASSISTANT"]
     content: str = Field(min_length=1)
@@ -81,8 +88,12 @@ class ProjectKnowledgeSourceInput(ResearchAssistantSchema):
 
 
 class ResearchChatRequest(ResearchAssistantSchema):
+    project_id: int | None = Field(default=None, gt=0)
+    session_id: int | None = Field(default=None, gt=0)
     resource_id: int | None = Field(default=None, gt=0)
     message: str = Field(min_length=1)
+    retrieval_query: str | None = None
+    query_rewrite_status: Literal["READY", "FALLBACK", "FAILED"] = "FALLBACK"
     history: list[ResearchChatMessageInput] = Field(default_factory=list)
     analysis: ResearchAnalysisResult | None = None
     project_title: str | None = None
@@ -175,6 +186,7 @@ class ResearchAssistantResponse(ResearchAssistantSchema, Generic[PayloadT]):
 
 
 ResearchAnalysisResponse = ResearchAssistantResponse[ResearchAnalysisResult]
+ResearchAnalysisSupplementResponse = ResearchAssistantResponse[ResearchAnalysisPatch]
 ResearchChatResponse = ResearchAssistantResponse[ResearchChatResult]
 ResearchConversationSummaryResponse = ResearchAssistantResponse[ResearchConversationSummaryResult]
 EvidenceCardGenerationResponse = ResearchAssistantResponse[EvidenceCardDraftResult]

@@ -18,16 +18,17 @@ class EvidenceReadinessService:
     """Backend-only policy for determining Evidence Card generation readiness."""
 
     REQUIRED_WEIGHTS = {
-        "participants": 15,
         "mainFindings": 15,
-        "teachingStrategies": 15,
         "sourceMetadata": 15,
+        "researchContext": 10,
     }
     RECOMMENDED_WEIGHTS = {
+        "participants": 8,
         "researchTopic": 8,
         "aiLiteracyDimensions": 8,
+        "teachingStrategies": 10,
         "intervention": 8,
-        "assessmentTools": 8,
+        "assessmentTools": 10,
         "limitations": 8,
     }
 
@@ -40,20 +41,24 @@ class EvidenceReadinessService:
         expected_resource_id: int | None = None,
     ) -> EvidenceReadinessResult:
         required = {
-            "participants": cls._has_list_value(analysis.research_subjects),
             "mainFindings": cls._has_list_value(analysis.main_findings),
-            "teachingStrategies": cls._has_list_value(
-                analysis.teaching_strategies
-            ),
             "sourceMetadata": cls._has_source_metadata(
                 source_metadata,
                 expected_resource_id=expected_resource_id,
             ),
+            "researchContext": (
+                cls._has_list_value(analysis.research_subjects)
+                or cls._has_list_value(analysis.research_topics)
+            ),
         }
         recommended = {
+            "participants": cls._has_list_value(analysis.research_subjects),
             "researchTopic": cls._has_list_value(analysis.research_topics),
             "aiLiteracyDimensions": cls._has_list_value(
                 analysis.ai_literacy_dimensions
+            ),
+            "teachingStrategies": cls._has_list_value(
+                analysis.teaching_strategies
             ),
             "intervention": cls._has_text(analysis.intervention_duration),
             "assessmentTools": cls._has_list_value(analysis.assessment_tools),

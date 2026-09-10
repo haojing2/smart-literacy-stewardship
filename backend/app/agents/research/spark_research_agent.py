@@ -31,6 +31,7 @@ from app.schemas.research_assistant import (
     ResearchConversationSummaryResponse,
     ResearchConversationSummaryResult,
 )
+from app.services.research_source_validation_service import validate_source_excerpt
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -55,15 +56,13 @@ class SparkResearchAgent(ResearchAgentProvider):
         )
         # Readiness is determined by application rules, never by Assistant text.
         result = result.model_copy(update={"evidence_ready": False})
-        if result.source_excerpt:
-            normalized_excerpt = self._normalize_source_text(result.source_excerpt)
-            normalized_document = self._normalize_source_text(
-                request.analysis_evidence or request.extracted_text or ""
+        result = result.model_copy(update={
+            "source_excerpt": validate_source_excerpt(
+                result.source_excerpt,
+                request.analysis_evidence or request.extracted_text or "",
+                resource_id=request.resource_id,
             )
-            if normalized_excerpt not in normalized_document:
-                # Keep the useful structured analysis but never persist an
-                # excerpt that cannot be traced back to the extracted paper.
-                result = result.model_copy(update={"source_excerpt": None})
+        })
         return ResearchAnalysisResponse(
             provider=self.provider_name,
             request_fingerprint=self._fingerprint(request),
@@ -72,6 +71,7 @@ class SparkResearchAgent(ResearchAgentProvider):
 
     async def chat(self, request: ResearchChatRequest) -> ResearchChatResponse:
         messages = self._assistant_messages(build_research_chat_messages(request))
+        self._log_final_messages(request, messages)
         content = await self._client.generate(messages)
         try:
             payload = SparkResearchAgentClient.extract_json_object(content)
@@ -105,9 +105,9 @@ class SparkResearchAgent(ResearchAgentProvider):
         )
 
     async def stream_chat(self, request: ResearchChatRequest) -> AsyncIterator[str]:
-        content = await self._client.generate(
-            self._assistant_messages(build_research_chat_stream_messages(request))
-        )
+        messages = self._assistant_messages(build_research_chat_stream_messages(request))
+        self._log_final_messages(request, messages)
+        content = await self._client.generate(messages)
         if not content.strip():
             raise ResearchAgentContractError("Research Agent stream response is empty")
         # The Assistant SDK call is non-streaming by design.  The endpoint keeps
@@ -211,20 +211,36 @@ class SparkResearchAgent(ResearchAgentProvider):
                 normalized.append({"role": role, "content": content})
         if system_parts:
             instruction = "[APPLICATION TASK]\n" + "\n\n".join(system_parts)
-            if normalized and normalized[0]["role"] == "user":
-                normalized[0] = {
+            last_user_index = next(
+                (index for index in range(len(normalized) - 1, -1, -1)
+                 if normalized[index]["role"] == "user"),
+                None,
+            )
+            if last_user_index is not None:
+                normalized[last_user_index] = {
                     "role": "user",
-                    "content": instruction + "\n\n" + normalized[0]["content"],
+                    "content": instruction + "\n\n" + normalized[last_user_index]["content"],
                 }
             else:
-                normalized.insert(0, {"role": "user", "content": instruction})
+                normalized.append({"role": "user", "content": instruction})
         if not normalized:
             raise ResearchAgentContractError("Research Agent prompt is empty")
         return normalized
 
     @staticmethod
-    def _normalize_source_text(value: str) -> str:
-        return " ".join(value.split())
+    def _log_final_messages(
+        request: ResearchChatRequest, messages: list[dict[str, str]]
+    ) -> None:
+        logger.info(
+            "Research Agent messages assembled project_id=%s session_id=%s resource_id=%s "
+            "final_agent_message_roles=%s final_agent_message_count=%s",
+            request.project_id,
+            request.session_id,
+            request.resource_id,
+            [message["role"] for message in messages],
+            len(messages),
+        )
+
 
     @staticmethod
     def _fingerprint(request: BaseModel) -> str:

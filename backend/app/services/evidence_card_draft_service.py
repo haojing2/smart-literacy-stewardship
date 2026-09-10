@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import logging
+
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.models.evidence_card import EvidenceCard
-from app.models.research import ResearchAnalysis, ResearchResource
+from app.models.research import ResearchAnalysis, ResearchChatSession, ResearchResource
 from app.repositories.evidence_card_repository import EvidenceCardRepository
 from app.repositories.research_chat_repository import ResearchChatRepository
 from app.schemas.evidence_card import (
@@ -18,6 +21,16 @@ from app.schemas.research_assistant import (
     ResearchAnalysisResult,
 )
 from app.services.evidence_readiness_service import EvidenceReadinessService
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EvidenceDraftSyncResult:
+    draft: EvidenceCardDraft | None
+    created: bool
+    action: str
 
 
 class EvidenceCardNotFoundError(LookupError):
@@ -156,59 +169,158 @@ class EvidenceCardDraftService:
         """Create and bind one draft only when this session becomes READY."""
         if previous_readiness_status != "INCOMPLETE":
             return None
+        synchronized = self.ensure_current_draft(
+            current_user_id=current_user_id,
+            session_id=session_id,
+            analysis_id=analysis_id,
+        )
+        return synchronized.draft if synchronized.created else None
+
+    def ensure_current_draft(
+        self,
+        *,
+        current_user_id: int,
+        session_id: int,
+        analysis_id: int,
+    ) -> EvidenceDraftSyncResult:
+        """Synchronize the session's synthesized card with its latest analysis.
+
+        Historical cards are immutable. A READY analysis reuses or creates its
+        own analysis-level card; an INCOMPLETE analysis clears only the session
+        binding. Retrieval chunk cards are deliberately ignored here.
+        """
+        chat_repository = ResearchChatRepository(self.db)
+        session = chat_repository.get_owned_session(
+            session_id=session_id,
+            user_id=current_user_id,
+            for_update=True,
+        )
+        if session is None:
+            self.db.rollback()
+            raise EvidenceCardNotFoundError("Research chat session was not found")
         owned = self.repository.get_owned_analysis(
             analysis_id=analysis_id,
             user_id=current_user_id,
         )
         if owned is None:
+            self.db.rollback()
             raise EvidenceCardNotFoundError("Research analysis was not found")
         analysis, resource = owned
+        if (
+            (resource is not None and session.resource_id != resource.id)
+            or (resource is None and analysis.session_id != session.id)
+        ):
+            self.db.rollback()
+            raise EvidenceCardNotFoundError(
+                "Research analysis does not belong to this chat session"
+            )
+        latest_analysis_id = self.repository.get_latest_analysis_id(
+            resource_id=resource.id if resource else None,
+            session_id=analysis.session_id,
+        )
+        if latest_analysis_id != analysis.id:
+            self.db.rollback()
+            raise EvidenceAnalysisStaleError(
+                "Only the latest research analysis can own the current Evidence Card"
+            )
+
+        previous_card_id = session.evidence_card_id
+        previous_card = (
+            self.repository.get_owned_card(
+                evidence_card_id=previous_card_id,
+                user_id=current_user_id,
+            )
+            if previous_card_id is not None
+            else None
+        )
         readiness = EvidenceReadinessService.evaluate(
             ResearchAnalysisResult.model_validate(analysis.structured_data_json),
             self._source_metadata(resource),
             expected_resource_id=resource.id if resource else None,
         )
         if readiness.readiness_status != "READY":
-            return None
-        session = ResearchChatRepository(self.db).get_owned_session(
-            session_id=session_id,
+            if session.evidence_card_id is not None:
+                chat_repository.clear_evidence_card(session)
+            self.db.commit()
+            result = EvidenceDraftSyncResult(
+                draft=None,
+                created=False,
+                action="CLEAR_STALE",
+            )
+            self._log_sync(
+                session=session,
+                analysis=analysis,
+                previous_card=previous_card,
+                current_card=None,
+                action=result.action,
+            )
+            return result
+
+        existing = self.repository.get_by_analysis_id(analysis_id=analysis.id)
+        if existing is not None:
+            action = "REUSE" if session.evidence_card_id == existing.id else "REBIND"
+            chat_repository.bind_evidence_card(session, evidence_card=existing)
+            self.db.commit()
+            result = EvidenceDraftSyncResult(
+                draft=self._response(existing, resource, analysis.project_id),
+                created=False,
+                action=action,
+            )
+            self._log_sync(
+                session=session,
+                analysis=analysis,
+                previous_card=previous_card,
+                current_card=existing,
+                action=action,
+            )
+            return result
+
+        draft = self.generate_draft(
+            current_user_id=current_user_id,
+            analysis_id=analysis.id,
+            session_id=session.id,
+        )
+        current_card = self.repository.get_owned_card(
+            evidence_card_id=draft.evidence_card_id,
             user_id=current_user_id,
         )
-        if session is None:
-            raise EvidenceCardNotFoundError("Research chat session was not found")
-        if session.evidence_card_id is not None:
-            bound = self.repository.get_owned_card(
-                evidence_card_id=session.evidence_card_id,
-                user_id=current_user_id,
-            )
-            if bound is not None and bound.research_analysis_id == analysis.id:
-                return None
-            ResearchChatRepository(self.db).clear_evidence_card(session)
-        existing = self.repository.get_latest_by_resource_id(
-            resource_id=resource.id if resource else None,
-            session_id=analysis.session_id,
+        self._log_sync(
+            session=session,
+            analysis=analysis,
+            previous_card=previous_card,
+            current_card=current_card,
+            action="CREATE",
         )
-        if existing is not None:
-            if existing.research_analysis_id == analysis.id:
-                # Reopening the same analysis in another session reuses its draft.
-                chat_repository = ResearchChatRepository(self.db)
-                locked_session = chat_repository.get_owned_session(
-                    session_id=session_id,
-                    user_id=current_user_id,
-                    for_update=True,
-                )
-                if locked_session is not None:
-                    chat_repository.bind_evidence_card(
-                        locked_session, evidence_card=existing
-                    )
-                    self.db.commit()
-                return None
-            # An older analysis card is intentionally retained, but a newly
-            # READY analysis receives a separate DRAFT.
-        return self.generate_draft(
-            current_user_id=current_user_id,
-            analysis_id=analysis_id,
-            session_id=session_id,
+        return EvidenceDraftSyncResult(
+            draft=draft,
+            created=True,
+            action="CREATE",
+        )
+
+    @staticmethod
+    def _log_sync(
+        *,
+        session: ResearchChatSession,
+        analysis: ResearchAnalysis,
+        previous_card: EvidenceCard | None,
+        current_card: EvidenceCard | None,
+        action: str,
+    ) -> None:
+        logger.info(
+            "Evidence draft synchronized project_id=%s session_id=%s "
+            "previous_analysis_id=%s latest_analysis_id=%s latest_analysis_version=%s "
+            "previous_evidence_card_id=%s previous_evidence_analysis_id=%s "
+            "current_evidence_card_id=%s current_evidence_analysis_id=%s action=%s",
+            analysis.project_id,
+            session.id,
+            previous_card.research_analysis_id if previous_card else None,
+            analysis.id,
+            analysis.version,
+            previous_card.id if previous_card else None,
+            previous_card.research_analysis_id if previous_card else None,
+            current_card.id if current_card else None,
+            current_card.research_analysis_id if current_card else None,
+            action,
         )
 
     def generate_retrieval_drafts(
