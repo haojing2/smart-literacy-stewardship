@@ -60,6 +60,7 @@ backend/tests/*
 !backend/tests/test_login_startup.py
 !backend/tests/test_admin_rbac.py
 !backend/tests/test_resource_creation_recovery.py
+!backend/tests/test_teaching_resource_generation_contract.py
 !backend/tests/test_research_chat_followup_retrieval.py
 !backend/tests/test_spark_llm_configuration.py
 !backend/tests/test_evidence_card_lifecycle_sync.py

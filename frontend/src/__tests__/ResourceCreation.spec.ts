@@ -122,4 +122,21 @@ describe('ResourceCreation persisted resource recovery', () => {
     expect(api.regenerateResources).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('shows seven selectable resources plus a non-selectable coming-soon card', async () => {
+    const wrapper = await mountResourceCreation()
+    await wrapper.find('.creation-flow').findAll('button')[0]!.trigger('click')
+
+    expect(wrapper.findAll('.resource-grid .resource-card')).toHaveLength(8)
+    expect(wrapper.findAll('.resource-grid [role="checkbox"]')).toHaveLength(7)
+    const placeholder = wrapper.find('.resource-card--placeholder')
+    expect(placeholder.text()).toContain('更多资源开发中...')
+    expect(placeholder.find('.el-checkbox').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('教学PPT')
+
+    await buttonByText(wrapper, '全选').trigger('click')
+    expect((wrapper.vm as unknown as { selectedResources: string[] }).selectedResources).toHaveLength(7)
+    expect((wrapper.vm as unknown as { selectedResources: string[] }).selectedResources).not.toContain('more-resources')
+    wrapper.unmount()
+  })
 })

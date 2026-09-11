@@ -17,7 +17,7 @@ const resourceRecords = ref<Record<string, { id: number; versionId?: number; ver
 const courseInfo = ref({ title: '', grade: '', lessonMinutes: 0, objectiveCount: 0, activityCount: 0, pedagogy: '' })
 const savedResourceJob = ref<any | null>(null)
 const settingsViewerVisible = ref(false)
-const apiTypeByUi: Record<string, string> = { ppt: 'PPT', 'teacher-guide': 'TEACHER_GUIDE', worksheet: 'WORKSHEET', 'task-card': 'TASK_CARD', 'ai-case': 'AI_CASE', discussion: 'DISCUSSION', assessment: 'ASSESSMENT', reflection: 'REFLECTION' }
+const apiTypeByUi: Record<string, string> = { 'teacher-guide': 'TEACHER_GUIDE', worksheet: 'WORKSHEET', 'task-card': 'TASK_CARD', 'ai-case': 'AI_CASE', discussion: 'DISCUSSION', assessment: 'ASSESSMENT', reflection: 'REFLECTION' }
 const uiTypeByApi: Record<string, string> = Object.fromEntries(Object.entries(apiTypeByUi).map(([key, value]) => [value, key]))
 
 function apiErrorMessage(error: unknown, fallback: string) {
@@ -37,17 +37,12 @@ const activeResourceId = ref('worksheet')
 const isApplyingRecommendations = ref(false)
 const recommendationNotice = ref(false)
 const isGeneratingDraft = ref(false)
-type DraftBlock = { id: string; heading: string; text: string; table?: boolean }
+type AssessmentColumn = { key: string; label: string }
+type AssessmentTable = { type: 'table'; columns: AssessmentColumn[]; rows: Record<string, unknown>[] }
+type AssessmentList = { type: 'list'; items: { title: string; description: string }[] }
+type DraftBlock = { id: string; heading: string; text: string; content?: unknown; table?: boolean }
 type ResourceDraft = { title: string; blocks: DraftBlock[] }
 const mockResourceDrafts: Record<string, ResourceDraft> = {
-  ppt: {
-    title: '教学PPT：AI信息核验',
-    blocks: [
-      { id: 'ppt-1', heading: '导入：AI回答一定可信吗？', text: '展示一则包含可疑信息的AI回答，引导学生提出核验问题。' },
-      { id: 'ppt-2', heading: '方法：信息核验三步法', text: '识别关键主张、寻找可靠来源、比较证据并修订结论。' },
-      { id: 'ppt-3', heading: '课堂挑战', text: '小组核验案例中的三条信息，并说明接受、修改或拒绝的理由。' },
-    ],
-  },
   'teacher-guide': {
     title: '教师流程卡：AI信息核验课',
     blocks: [
@@ -135,7 +130,6 @@ const commonSettings = reactive({
 })
 const resourceSettings = reactive({
   worksheet: { duration: '15分钟', scaffolding: '中', example: true, recordArea: true, reflection: true },
-  ppt: { pages: 8, density: '适中', visualRatio: '图文均衡', speakerNotes: true, questions: true },
   'task-card': { quantity: 4, format: '小组', timeHint: true, criteria: true },
   'ai-case': { role: '学习助手', turns: 6, errorAnswer: true, judgement: true, discussionPrompt: true },
   assessment: { type: '形成性', evaluator: '教师评价', rubric: true, levels: 4, observableIndicators: true },
@@ -144,7 +138,6 @@ const resourceSettings = reactive({
   reflection: { audience: '学生', questionCount: 4, actionPlan: true },
 })
 const resourceTypes = [
-  { id: 'ppt', icon: '▤', title: '教学PPT', description: '用于课堂展示的教学内容结构与页面建议。' },
   { id: 'teacher-guide', icon: '☷', title: '教师流程卡', description: '帮助教师快速掌握每个教学环节、时间和提示语。' },
   { id: 'worksheet', icon: '▧', title: '学生学习单', description: '支持学生完成观察、核验、比较、记录和反思任务。' },
   { id: 'task-card', icon: '□', title: '课堂任务卡', description: '提供可直接发给学生的小组或个人任务。' },
@@ -152,6 +145,10 @@ const resourceTypes = [
   { id: 'discussion', icon: '◍', title: '讨论问题', description: '生成课堂提问、小组讨论和全班交流问题。' },
   { id: 'assessment', icon: '✓', title: '教学评价工具', description: '生成观察表、Rubric、Exit Ticket等。' },
   { id: 'reflection', icon: '↺', title: '课后反思单', description: '支持学生或教师进行课后反思。' },
+]
+const resourceCards = [
+  ...resourceTypes.map((resource) => ({ ...resource, placeholder: false as const })),
+  { id: 'more-resources', icon: '+', title: '更多资源开发中...', description: '更多教学资源类型正在持续开发，敬请期待。', placeholder: true as const },
 ]
 const commonSettingLabels: Record<string, string> = { difficulty: '内容难度', grade: '使用对象', studentLevel: '学生水平', duration: '活动时间', format: '任务方式', lowDeviceAlternative: '低设备替代方案', languageStyle: '语言风格', lessonMinutes: '每课时分钟', devices: '设备条件', resourceStyle: '资源风格' }
 const resourceSettingLabels: Record<string, string> = { duration: '预计完成时间', scaffolding: '支架程度', example: '提供示例', recordArea: '提供记录区域', reflection: '提供反思问题', pages: '建议页数', density: '信息密度', visualRatio: '图文比例', speakerNotes: '教师讲解提示', questions: '课堂提问', quantity: '数量', format: '组织形式', timeHint: '时间提示', criteria: '完成标准', role: 'AI角色', turns: '对话轮数', errorAnswer: '包含待核查回答', judgement: '要求学生判断', discussionPrompt: '讨论提示', type: '评价类型', evaluator: '评价主体', rubric: '生成Rubric', levels: 'Rubric等级数', observableIndicators: '可观察行为指标', detail: '内容详细程度', timing: '时间提示', prompts: '教学提示', thinkingLevel: '思维层次', groupPrompt: '小组讨论提示', audience: '反思对象', questionCount: '问题数量', actionPlan: '行动计划' }
@@ -405,10 +402,25 @@ async function editThenAdoptProposal() {
 }
 
 function toServerContent(draft: ResourceDraft) {
-  return { title: draft.title, blocks: draft.blocks.map((block) => ({ key: block.id, title: block.heading, content: block.text })), metadata: {} }
+  return { title: draft.title, blocks: draft.blocks.map((block) => ({ key: block.id, title: block.heading, content: block.content ?? block.text })), metadata: {} }
 }
 function fromServerContent(content: any): ResourceDraft {
-  return { title: content?.title || '教学资源', blocks: (content?.blocks || []).map((block: any, index: number) => ({ id: block.key || `block-${index}`, heading: block.title || '资源内容', text: typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '') })) }
+  return { title: content?.title || '教学资源', blocks: (content?.blocks || []).map((block: any, index: number) => ({ id: block.key || `block-${index}`, heading: block.title || '资源内容', text: typeof block.content === 'string' ? block.content : '', content: typeof block.content === 'object' && block.content !== null ? block.content : undefined })) }
+}
+function validAssessmentTable(value: unknown): value is AssessmentTable {
+  if (!value || typeof value !== 'object') return false
+  const table = value as Partial<AssessmentTable>
+  if (table.type !== 'table' || !Array.isArray(table.columns) || !table.columns.length || !Array.isArray(table.rows) || table.rows.length > 3) return false
+  const keys = table.columns.map((column) => column?.key)
+  if (keys.some((key) => typeof key !== 'string' || !key) || new Set(keys).size !== keys.length) return false
+  const validKeys = keys as string[]
+  if (table.columns.some((column) => typeof column?.label !== 'string' || !column.label)) return false
+  return table.rows.every((row) => row && typeof row === 'object' && !Array.isArray(row) && validKeys.every((key) => key in row && row[key] !== null && row[key] !== undefined))
+}
+function validAssessmentList(value: unknown): value is AssessmentList {
+  if (!value || typeof value !== 'object') return false
+  const list = value as Partial<AssessmentList>
+  return list.type === 'list' && Array.isArray(list.items) && list.items.length <= 3 && list.items.every((item) => typeof item?.title === 'string' && Boolean(item.title) && typeof item?.description === 'string' && Boolean(item.description))
 }
 async function restoreServerState() {
   if (!projectId.value) return
@@ -422,7 +434,11 @@ async function restoreServerState() {
     currentMode.value = job.mode === 'COURSE_GENERATE' ? 'generate' : 'adapt'
     selectedResources.value = (job.selectedTypes || []).map((item: string) => uiTypeByApi[item]).filter(Boolean)
     Object.assign(commonSettings, job.commonSettings || {})
-    Object.assign(resourceSettings, job.resourceSettings || {})
+    for (const [key, value] of Object.entries(job.resourceSettings || {})) {
+      if (key in resourceSettings && value && typeof value === 'object') {
+        Object.assign(resourceSettings[key as keyof typeof resourceSettings], value)
+      }
+    }
   }
   resourceRecords.value = {}
   // Keep mock previews for resource types without a generated server version.
@@ -479,13 +495,13 @@ onMounted(() => { void initialize() })
         <article class="mode-card recommended">
           <header><span class="mode-icon" aria-hidden="true">▤</span><span class="recommendation-label">推荐</span></header>
           <h3>基于课程生成资源</h3>
-          <p>读取已有课程设计，生成PPT、学习单、任务卡、评价工具等课堂资源。</p>
+          <p>读取已有课程设计，生成学习单、任务卡、评价工具等课堂资源。</p>
           <footer><el-button type="primary" @click="currentMode = 'generate'">开始生成资源</el-button></footer>
         </article>
         <article class="mode-card">
           <header><span class="mode-icon adapt-icon" aria-hidden="true">↺</span></header>
           <h3>智能改编已有资源</h3>
-          <p>上传已有教案、PPT或学习单，根据新的年级、课时、设备条件或教学要求进行改编。</p>
+          <p>上传已有教案或学习单，根据新的年级、课时、设备条件或教学要求进行改编。</p>
           <footer><el-button @click="currentMode = 'adapt'">开始智能改编</el-button></footer>
         </article>
       </div>
@@ -504,10 +520,16 @@ onMounted(() => { void initialize() })
         <section class="resource-selection-card">
           <header class="selection-header"><div><h2>选择需要生成的教学资源</h2><p>可以一次选择一种或多种资源，系统将根据当前课程设计分别生成。</p></div><div class="batch-actions" aria-label="批量选择资源"><el-button link @click="selectAllResources">全选</el-button><span aria-hidden="true"></span><el-button link @click="clearResources">清空</el-button></div></header>
           <div class="resource-grid">
-            <article v-for="resource in resourceTypes" :key="resource.id" class="resource-card" :class="[`resource-card--${resource.id}`, { selected: selectedResources.includes(resource.id) }]" role="checkbox" tabindex="0" :aria-checked="selectedResources.includes(resource.id)" @click="toggleResource(resource.id)" @keydown.space.prevent="toggleResource(resource.id)" @keydown.enter.prevent="toggleResource(resource.id)">
-              <header><span class="resource-icon" aria-hidden="true">{{ resource.icon }}</span><el-checkbox :model-value="selectedResources.includes(resource.id)" :aria-label="`选择${resource.title}`" @click.stop @change="toggleResource(resource.id)" /></header>
-              <h3>{{ resource.title }}</h3><p>{{ resource.description }}</p><div class="resource-generation-status" :class="{ generated: Boolean(resourceRecords[resource.id]?.versionId) }"><span>{{ resourceRecords[resource.id]?.versionId ? `已生成 · v${resourceRecords[resource.id]?.versionNo || 1}` : '尚未生成' }}</span><el-button v-if="resourceRecords[resource.id]?.versionId" link type="primary" @click.stop="openGeneratedDraft(resource.id)">查看</el-button></div>
-            </article>
+            <template v-for="resource in resourceCards" :key="resource.id">
+              <article v-if="resource.placeholder" class="resource-card resource-card--placeholder" aria-label="更多资源开发中">
+                <header><span class="resource-icon" aria-hidden="true">{{ resource.icon }}</span></header>
+                <h3>{{ resource.title }}</h3><p>{{ resource.description }}</p>
+              </article>
+              <article v-else class="resource-card" :class="[`resource-card--${resource.id}`, { selected: selectedResources.includes(resource.id) }]" role="checkbox" tabindex="0" :aria-checked="selectedResources.includes(resource.id)" @click="toggleResource(resource.id)" @keydown.space.prevent="toggleResource(resource.id)" @keydown.enter.prevent="toggleResource(resource.id)">
+                <header><span class="resource-icon" aria-hidden="true">{{ resource.icon }}</span><el-checkbox :model-value="selectedResources.includes(resource.id)" :aria-label="`选择${resource.title}`" @click.stop @change="toggleResource(resource.id)" /></header>
+                <h3>{{ resource.title }}</h3><p>{{ resource.description }}</p><div class="resource-generation-status" :class="{ generated: Boolean(resourceRecords[resource.id]?.versionId) }"><span>{{ resourceRecords[resource.id]?.versionId ? `已生成 · v${resourceRecords[resource.id]?.versionNo || 1}` : '尚未生成' }}</span><el-button v-if="resourceRecords[resource.id]?.versionId" link type="primary" @click.stop="openGeneratedDraft(resource.id)">查看</el-button></div>
+              </article>
+            </template>
           </div>
           <footer class="selection-actions"><el-button @click="returnToModeSelection">返回模式选择</el-button><el-button type="primary" :disabled="selectedResources.length === 0" @click="currentGenerateStep = 2">下一步：设置生成条件</el-button></footer>
         </section>
@@ -532,7 +554,6 @@ onMounted(() => { void initialize() })
           <article class="exclusive-settings-card">
             <header><p class="section-eyebrow">当前资源</p><h2>{{ activeResource?.title }}</h2></header>
             <el-form v-if="activeResourceId === 'worksheet'" class="exclusive-form" label-position="top"><el-form-item label="预计完成时间"><el-select v-model="resourceSettings.worksheet.duration"><el-option label="10分钟" value="10分钟" /><el-option label="15分钟" value="15分钟" /><el-option label="20分钟" value="20分钟" /></el-select></el-form-item><el-form-item label="支架程度"><el-radio-group v-model="resourceSettings.worksheet.scaffolding"><el-radio-button label="低" value="低" /><el-radio-button label="中" value="中" /><el-radio-button label="高" value="高" /></el-radio-group></el-form-item><el-form-item label="提供示例"><el-switch v-model="resourceSettings.worksheet.example" /></el-form-item><el-form-item label="提供记录区域"><el-switch v-model="resourceSettings.worksheet.recordArea" /></el-form-item><el-form-item label="提供反思问题"><el-switch v-model="resourceSettings.worksheet.reflection" /></el-form-item></el-form>
-            <el-form v-else-if="activeResourceId === 'ppt'" class="exclusive-form" label-position="top"><el-form-item label="建议页数"><el-input-number v-model="resourceSettings.ppt.pages" :min="3" :max="20" /></el-form-item><el-form-item label="每页信息密度"><el-select v-model="resourceSettings.ppt.density"><el-option label="简洁" value="简洁" /><el-option label="适中" value="适中" /><el-option label="丰富" value="丰富" /></el-select></el-form-item><el-form-item label="图文比例"><el-select v-model="resourceSettings.ppt.visualRatio"><el-option label="图文均衡" value="图文均衡" /><el-option label="以图为主" value="以图为主" /><el-option label="以文字为主" value="以文字为主" /></el-select></el-form-item><el-form-item label="包含教师讲解提示"><el-switch v-model="resourceSettings.ppt.speakerNotes" /></el-form-item><el-form-item label="包含课堂提问"><el-switch v-model="resourceSettings.ppt.questions" /></el-form-item></el-form>
             <el-form v-else-if="activeResourceId === 'task-card'" class="exclusive-form" label-position="top"><el-form-item label="任务数量"><el-input-number v-model="resourceSettings['task-card'].quantity" :min="1" :max="10" /></el-form-item><el-form-item label="个人/小组"><el-select v-model="resourceSettings['task-card'].format"><el-option label="个人" value="个人" /><el-option label="小组" value="小组" /></el-select></el-form-item><el-form-item label="包含时间提示"><el-switch v-model="resourceSettings['task-card'].timeHint" /></el-form-item><el-form-item label="包含完成标准"><el-switch v-model="resourceSettings['task-card'].criteria" /></el-form-item></el-form>
             <el-form v-else-if="activeResourceId === 'ai-case'" class="exclusive-form" label-position="top"><el-form-item label="AI角色"><el-input v-model="resourceSettings['ai-case'].role" /></el-form-item><el-form-item label="对话轮数"><el-input-number v-model="resourceSettings['ai-case'].turns" :min="2" :max="12" /></el-form-item><el-form-item label="包含错误回答"><el-switch v-model="resourceSettings['ai-case'].errorAnswer" /></el-form-item><el-form-item label="要求学生判断"><el-switch v-model="resourceSettings['ai-case'].judgement" /></el-form-item><el-form-item label="包含讨论提示"><el-switch v-model="resourceSettings['ai-case'].discussionPrompt" /></el-form-item></el-form>
             <el-form v-else-if="activeResourceId === 'assessment'" class="exclusive-form" label-position="top"><el-form-item label="评价类型"><el-radio-group v-model="resourceSettings.assessment.type"><el-radio-button label="形成性" value="形成性" /><el-radio-button label="总结性" value="总结性" /></el-radio-group></el-form-item><el-form-item label="评价主体"><el-select v-model="resourceSettings.assessment.evaluator"><el-option label="教师评价" value="教师评价" /><el-option label="自评" value="自评" /><el-option label="互评" value="互评" /></el-select></el-form-item><el-form-item label="生成Rubric"><el-switch v-model="resourceSettings.assessment.rubric" /></el-form-item><el-form-item label="Rubric等级数"><el-input-number v-model="resourceSettings.assessment.levels" :min="3" :max="5" /></el-form-item><el-form-item label="包含可观察行为指标"><el-switch v-model="resourceSettings.assessment.observableIndicators" /></el-form-item></el-form>
@@ -549,7 +570,19 @@ onMounted(() => { void initialize() })
           <article class="draft-editor">
             <header class="editor-header"><div><p class="section-eyebrow">当前资源</p><h2>{{ activeDraft.title }}</h2><span v-if="teacherModified" class="modified-tag">教师已修改</span></div><div class="editor-actions"><el-button @click="assistantVisible = true">AI共创助手</el-button><el-button v-if="!isEditingDraft" @click="startEditingDraft">编辑</el-button><template v-else><el-button @click="cancelDraftEdits">取消</el-button><el-button type="primary" @click="saveDraftEdits">保存修改</el-button></template></div></header>
             <section class="draft-content">
-              <article v-for="block in activeDraft.blocks" :key="block.id" class="draft-block"><header><h3>{{ block.heading }}</h3><el-dropdown trigger="click"><button class="block-menu" type="button" aria-label="内容块操作">···</button><template #dropdown><el-dropdown-menu><el-dropdown-item @click="applyBlockAction(block, 'edit')">编辑本段</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'regenerate')">重新生成本段</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'simplify')">简化</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'harder')">增加难度</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'scaffold')">增加支架</el-dropdown-item></el-dropdown-menu></template></el-dropdown></header><el-input v-if="isEditingDraft" v-model="block.text" type="textarea" :rows="3" resize="none" /><p v-else>{{ block.text }}</p><span v-if="regeneratingBlockId === block.id" class="block-loading">正在重新生成本段…</span><div v-if="block.table" class="mock-table"><div><span>信息</span><span>来源1</span><span>来源2</span><span>是否一致</span></div><div><span>________________</span><span>________________</span><span>________________</span><span>□ 是　□ 否</span></div></div></article>
+              <article v-for="block in activeDraft.blocks" :key="block.id" class="draft-block">
+                <header><h3>{{ block.heading }}</h3><el-dropdown trigger="click"><button class="block-menu" type="button" aria-label="内容块操作">···</button><template #dropdown><el-dropdown-menu><el-dropdown-item @click="applyBlockAction(block, 'edit')">编辑本段</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'regenerate')">重新生成本段</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'simplify')">简化</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'harder')">增加难度</el-dropdown-item><el-dropdown-item @click="applyBlockAction(block, 'scaffold')">增加支架</el-dropdown-item></el-dropdown-menu></template></el-dropdown></header>
+                <el-input v-if="isEditingDraft" v-model="block.text" type="textarea" :rows="3" resize="none" />
+                <template v-else>
+                  <el-table v-if="activePreviewResourceId === 'assessment' && block.id === 'rubric' && validAssessmentTable(block.content)" :data="block.content.rows" table-layout="fixed">
+                    <el-table-column v-for="column in block.content.columns" :key="column.key" :prop="column.key" :label="column.label" />
+                  </el-table>
+                  <p v-else-if="activePreviewResourceId === 'assessment' && block.id === 'rubric'" class="assessment-structure-error">该表格结构异常，请重新生成本段</p>
+                  <ul v-else-if="activePreviewResourceId === 'assessment' && validAssessmentList(block.content)" class="assessment-list"><li v-for="item in block.content.items" :key="item.title"><strong>{{ item.title }}</strong><span>{{ item.description }}</span></li></ul>
+                  <p v-else>{{ block.text }}</p>
+                </template>
+                <span v-if="regeneratingBlockId === block.id" class="block-loading">正在重新生成本段…</span><div v-if="block.table" class="mock-table"><div><span>信息</span><span>来源1</span><span>来源2</span><span>是否一致</span></div><div><span>________________</span><span>________________</span><span>________________</span><span>□ 是　□ 否</span></div></div>
+              </article>
             </section>
           </article>
         </section>
@@ -654,7 +687,6 @@ onMounted(() => { void initialize() })
 .resource-card :deep(.el-checkbox__inner) { width: 17px; height: 17px; border-color: #cbd5e1; border-radius: 5px; background: rgb(255 255 255 / 92%); }
 .resource-card :deep(.el-checkbox__input:hover .el-checkbox__inner) { border-color: #3b82f6; }
 .resource-card :deep(.el-checkbox__input.is-checked .el-checkbox__inner) { border-color: #3b82f6; background: #3b82f6; }
-.resource-card--ppt { --card-bg: #f1f7ff; --card-bg-hover: #f7faff; --icon-bg: #4c86dc; }
 .resource-card--teacher-guide { --card-bg: #f1f9f4; --card-bg-hover: #f6fbf8; --icon-bg: #4f9b72; }
 .resource-card--worksheet { --card-bg: #f7f3ff; --card-bg-hover: #faf8ff; --icon-bg: #8069ce; }
 .resource-card--task-card { --card-bg: #eff9fa; --card-bg-hover: #f5fbfc; --icon-bg: #3795a0; }
@@ -662,6 +694,12 @@ onMounted(() => { void initialize() })
 .resource-card--discussion { --card-bg: #f1f7fc; --card-bg-hover: #f7fafd; --icon-bg: #4d86ba; }
 .resource-card--assessment { --card-bg: #fff8eb; --card-bg-hover: #fffbf3; --icon-bg: #c58b3b; }
 .resource-card--reflection { --card-bg: #faf2f8; --card-bg-hover: #fcf7fb; --icon-bg: #a86898; }
+.resource-card--placeholder { --card-bg: #f7f9fc; --card-bg-hover: #f7f9fc; --icon-bg: #a7b0bd; border-color: rgb(148 163 184 / 18%); cursor: default; }
+.resource-card--placeholder:hover { transform: none; border-color: rgb(148 163 184 / 18%); background: var(--card-bg); box-shadow: none; }
+.resource-card--placeholder::after { opacity: .035; }
+.resource-card--placeholder .resource-icon { color: #7f8a99; background: #e9edf2; box-shadow: none; }
+.resource-card--placeholder h3 { color: #7b8796; }
+.resource-card--placeholder p { color: #98a2b3; }
 .selection-actions { margin-top: 27px; padding-top: 20px; }
 .selection-actions :deep(.el-button--primary) { min-width: 172px; border-color: #2563eb; background: #2563eb; }
 .selection-actions :deep(.el-button--primary:hover) { border-color: #1d4ed8; background: #1d4ed8; }

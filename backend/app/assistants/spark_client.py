@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -57,6 +58,14 @@ class SparkResponseParseError(SparkResponseError):
     pass
 
 
+class SparkOutputLengthError(SparkResponseError):
+    """Spark stopped at its output limit before completing a resource JSON object."""
+
+    def __init__(self, message: str, *, reasoning_tokens: int | None = None) -> None:
+        super().__init__(message)
+        self.reasoning_tokens = reasoning_tokens
+
+
 class SparkContractError(SparkResponseError):
     """Spark returned data that violates an application result contract."""
 
@@ -81,20 +90,23 @@ class SparkLLMClient:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        performance_context: dict[str, object] | None = None,
     ) -> str:
         request: dict[str, Any] = {
             "model": settings.spark_model_id,
             "messages": messages,
             "stream": False,
             "max_tokens": max_tokens or settings.spark_max_tokens,
-            "extra_headers": {"lora_id": settings.spark_lora_id},
             "extra_body": {
                 "search_disable": True,
                 "enable_thinking": False,
             },
         }
+        if settings.spark_lora_id:
+            request["extra_headers"] = {"lora_id": settings.spark_lora_id}
         if temperature is not None:
             request["temperature"] = temperature
+        started_at = time.perf_counter()
         try:
             response = await self._client.chat.completions.create(**request)  # type: ignore[arg-type]
         except APITimeoutError as exc:
@@ -109,11 +121,45 @@ class SparkLLMClient:
             logger.warning("Unexpected Spark SDK failure: %s", type(exc).__name__)
             raise SparkLLMError("Spark request failed") from exc
 
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+        usage = getattr(response, "usage", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
+        finish_reason = getattr(response.choices[0], "finish_reason", None) if response.choices else None
+        logger.info(
+            "Spark performance resource_type=%s attempt=%s requested_max_tokens=%s prompt_tokens=%s reasoning_tokens=%s completion_tokens=%s finish_reason=%s provider_elapsed_ms=%s normalize_result=%s repair_triggered=%s",
+            (performance_context or {}).get("resource_type"),
+            (performance_context or {}).get("attempt", 1),
+            request["max_tokens"],
+            getattr(usage, "prompt_tokens", None),
+            reasoning_tokens,
+            getattr(usage, "completion_tokens", None),
+            finish_reason,
+            elapsed_ms,
+            (performance_context or {}).get("normalize_result"),
+            bool((performance_context or {}).get("repair_triggered", False)),
+        )
+
         if not response.choices:
             raise SparkResponseError("Spark response has no choices")
         choice = response.choices[0]
         message = choice.message
         content = message.content
+        if finish_reason == "length" and (
+            not isinstance(content, str)
+            or not content.strip()
+            or self._looks_like_truncated_json(content)
+        ):
+            logger.warning(
+                "Spark output length exceeded resource_type=%s requested_max_tokens=%s reasoning_tokens=%s",
+                (performance_context or {}).get("resource_type"),
+                request["max_tokens"],
+                reasoning_tokens,
+            )
+            raise SparkOutputLengthError(
+                "Spark output was truncated at the requested token limit",
+                reasoning_tokens=reasoning_tokens,
+            )
         if not isinstance(content, str) or not content.strip():
             refusal = getattr(message, "refusal", None)
             tool_calls = getattr(message, "tool_calls", None)
@@ -143,17 +189,19 @@ class SparkLLMClient:
         self, messages: list[dict[str, str]]
     ) -> AsyncIterator[str]:
         try:
-            stream = await self._client.chat.completions.create(
-                model=settings.spark_model_id,
-                messages=messages,  # type: ignore[arg-type]
-                stream=True,
-                max_tokens=settings.spark_max_tokens,
-                extra_headers={"lora_id": settings.spark_lora_id},
-                extra_body={
+            request: dict[str, Any] = {
+                "model": settings.spark_model_id,
+                "messages": messages,
+                "stream": True,
+                "max_tokens": settings.spark_max_tokens,
+                "extra_body": {
                     "search_disable": True,
                     "enable_thinking": False,
                 },
-            )
+            }
+            if settings.spark_lora_id:
+                request["extra_headers"] = {"lora_id": settings.spark_lora_id}
+            stream = await self._client.chat.completions.create(**request)  # type: ignore[arg-type]
             received_content = False
             async for chunk in stream:
                 if not chunk.choices:
@@ -180,15 +228,25 @@ class SparkLLMClient:
         messages: list[dict[str, str]],
         *,
         repair: bool = True,
+        performance_context: dict[str, object] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
-        content = await self.chat(messages, temperature=0.2)
+        content = await self.chat(
+            messages, temperature=0.2, max_tokens=max_tokens,
+            performance_context=performance_context,
+        )
         try:
             return self._extract_json_object(content)
         except SparkResponseParseError:
             if not repair:
                 raise
             repair_messages = [*messages, {"role": "user", "content": "The previous response did not satisfy the JSON contract. Return only one complete JSON object matching the supplied resultSchema; do not include Markdown or explanatory text."}]
-            repaired = await self.chat(repair_messages, temperature=0.2)
+            repaired = await self.chat(
+                repair_messages,
+                temperature=0.2,
+                max_tokens=max_tokens,
+                performance_context={**(performance_context or {}), "repair_triggered": True},
+            )
             return self._extract_json_object(repaired)
 
     @staticmethod
@@ -204,6 +262,14 @@ class SparkLLMClient:
             if isinstance(payload, dict):
                 return payload
         raise SparkResponseParseError("Spark response does not contain a complete JSON object")
+
+    @classmethod
+    def _looks_like_truncated_json(cls, content: str) -> bool:
+        try:
+            cls._extract_json_object(content)
+        except SparkResponseParseError:
+            return True
+        return False
 
     @staticmethod
     def _provider_error(exc: APIStatusError, *, operation: str) -> SparkProviderError:

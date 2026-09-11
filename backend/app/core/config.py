@@ -68,8 +68,10 @@ class Settings(BaseSettings):
     spark_api_key: str | None = None
     spark_api_base: str = "https://maas-api.cn-huabei-1.xf-yun.com/v2"
     spark_model_id: str = "spark-x2.5-4b"
-    spark_lora_id: str = "0"
+    spark_lora_id: str | None = None
     spark_max_tokens: int = 8192
+    spark_resource_max_tokens: int = 8192
+    spark_resource_retry_max_tokens: int = 16384
     spark_timeout_seconds: float = 120.0
 
     # Assistant credentials deliberately do not reuse the OpenAI-compatible

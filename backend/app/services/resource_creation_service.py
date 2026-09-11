@@ -34,7 +34,7 @@ from app.schemas.resource_creation import (
     TeachingResourceVersionCreateRequest,
     ResourceType,
 )
-from app.assistants.prompts.resource_creation import validate_generated_resource
+from app.assistants.prompts.resource_creation import validate_assessment_content, validate_generated_resource
 from app.services.resource_generation_context_service import ResourceGenerationContextService
 from app.services.project_service import ProjectNotFoundError
 
@@ -478,6 +478,10 @@ class ResourceCreationService:
         commit: bool = True,
     ) -> dict[str, object]:
         """Append only: no operation mutates an existing resource version."""
+        if ResourceType(resource.resource_type) == ResourceType.ASSESSMENT:
+            if not isinstance(content, dict):
+                raise ValueError("Assessment content must be an object")
+            validate_assessment_content(content)
         try:
             next_version_no = resource.current_version_no + 1
             version = self.repository.create_version(

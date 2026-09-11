@@ -11,7 +11,10 @@ from typing import Any, Callable, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from app.assistants.base import ResearchAssistantProvider
-from app.assistants.spark_client import SparkContractError, SparkLLMClient, SparkResponseParseError
+from app.assistants.spark_client import (
+    SparkContractError, SparkLLMClient, SparkOutputLengthError, SparkResponseParseError,
+)
+from app.core.config import settings
 from app.assistants.prompts.course_assessment import build_course_assessment_messages
 from app.assistants.prompts.course_blueprint import build_course_activity_regeneration_messages, build_course_blueprint_messages
 from app.assistants.prompts.course_context import build_course_context_messages
@@ -20,7 +23,10 @@ from app.assistants.prompts.course_pedagogy import build_course_pedagogy_message
 from app.assistants.prompts.course_quality import build_course_quality_messages
 from app.assistants.prompts.research import build_evidence_card_messages, build_research_analysis_messages, build_research_analysis_supplement_messages, build_research_chat_messages, build_research_chat_stream_messages
 from app.assistants.prompts.resource_creation import (
+    RESOURCE_OUTPUT_TEMPLATES,
+    TEACHING_RESOURCE_STRUCTURE_RULES,
     build_teaching_resource_messages,
+    normalize_assessment_content,
     validate_generated_resource,
 )
 from app.schemas.course_design import (
@@ -40,13 +46,70 @@ from app.services.research_source_validation_service import validate_source_exce
 from app.schemas.resource_creation import (
     ResourceBlockTransformProviderRequest, ResourceBlockTransformResult, ResourceRevisionProposalRequest,
     ResourceRevisionProposalResult, ResourceSettingsRecommendationRequest, ResourceSettingsRecommendationResult,
-    TeachingResourceGenerationRequest, TeachingResourceGenerationResult, TeachingResourceReviewRequest,
+    ResourceType, TeachingResourceGenerationRequest, TeachingResourceGenerationResult, TeachingResourceReviewRequest,
     TeachingResourceReviewResult,
 )
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 logger = logging.getLogger(__name__)
+
+
+def normalize_resource_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize common resource nesting mistakes without weakening model validation."""
+    title = payload.get("title")
+    change_summary = payload.get("changeSummary", payload.get("change_summary"))
+    content = payload.get("content")
+
+    if isinstance(content, dict):
+        if "blocks" not in content and "key" in content:
+            normalized_content = {"title": title, "blocks": [content], "metadata": {}}
+        else:
+            normalized_content = {
+                "title": content.get("title", title),
+                "blocks": content.get("blocks", []),
+                "metadata": content.get("metadata", {}),
+            }
+    elif "blocks" in payload:
+        normalized_content = {
+            "title": title,
+            "blocks": payload.get("blocks"),
+            "metadata": payload.get("metadata", {}),
+        }
+    elif "key" in payload:
+        normalized_content = {
+            "title": title,
+            "blocks": [{
+                "key": payload.get("key"),
+                "title": payload.get("blockTitle"),
+                "content": content,
+            }],
+            "metadata": {},
+        }
+    else:
+        return {
+            "title": title,
+            "content": content,
+            "changeSummary": change_summary,
+        }
+
+    if isinstance(normalized_content["blocks"], dict):
+        normalized_content["blocks"] = [normalized_content["blocks"]]
+    if isinstance(normalized_content["blocks"], list):
+        normalized_content["blocks"] = [
+            {
+                key: block[key]
+                for key in ("key", "title", "content")
+                if key in block
+            }
+            if isinstance(block, dict) else block
+            for block in normalized_content["blocks"]
+        ]
+    return {
+        "title": title or normalized_content["title"],
+        "content": normalized_content,
+        "changeSummary": change_summary,
+    }
 
 
 class SparkResearchAssistant(ResearchAssistantProvider):
@@ -156,7 +219,10 @@ class SparkResearchAssistant(ResearchAssistantProvider):
             logger.exception("Teaching resource generation failed stage=prompt_build exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
             raise
         try:
-            return await self._from_messages(messages, TeachingResourceGenerationResult, validate)
+            return await self._from_messages(
+                messages, TeachingResourceGenerationResult, validate,
+                resource_type=request.resource_type,
+            )
         except (SparkResponseParseError, SparkContractError) as exc:
             logger.exception("Teaching resource generation failed stage=schema_validation exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
             raise
@@ -197,18 +263,44 @@ class SparkResearchAssistant(ResearchAssistantProvider):
     async def _from_messages(
         self, messages: list[dict[str, str]], result_type: type[ModelT],
         contract_validator: Callable[[ModelT], object] | None = None,
+        resource_type: ResourceType | None = None,
     ) -> ModelT:
         try:
-            payload = await self._client.chat_json(messages, repair=False)
+            if resource_type:
+                payload = await self._resource_chat_json(
+                    messages, resource_type=resource_type, repair_triggered=False
+                )
+            else:
+                payload = await self._client.chat_json(messages, repair=False)
         except SparkResponseParseError as exc:
             logger.warning("Structured model output failed stage=json_parse exception_type=%s; attempting one repair", type(exc).__name__)
-            return await self._repair_and_validate(messages, result_type, contract_validator)
-        return await self._validate_or_repair(messages, payload, result_type, contract_validator)
+            return await self._repair_and_validate(
+                messages, result_type, contract_validator, validation_error=str(exc),
+                resource_type=resource_type,
+            )
+        return await self._validate_or_repair(
+            messages, payload, result_type, contract_validator, resource_type=resource_type
+        )
 
     async def _validate_or_repair(
         self, messages: list[dict[str, str]], payload: dict[str, Any], result_type: type[ModelT],
         contract_validator: Callable[[ModelT], object] | None,
+        *, resource_type: ResourceType | None = None,
     ) -> ModelT:
+        if result_type is TeachingResourceGenerationResult:
+            normalized = normalize_resource_payload(payload)
+            normalize_result = "changed" if normalized != payload else "unchanged"
+            if resource_type == ResourceType.ASSESSMENT and isinstance(normalized.get("content"), dict):
+                assessment_content = normalize_assessment_content(normalized["content"])
+                if assessment_content != normalized["content"]:
+                    normalize_result = "changed"
+                normalized["content"] = assessment_content
+            logger.info(
+                "Resource payload normalized resource_type=%s normalize_result=%s repair_triggered=false",
+                resource_type.value if resource_type else None,
+                normalize_result,
+            )
+            payload = normalized
         try:
             result = result_type.model_validate(payload, extra="forbid")
             if contract_validator is not None:
@@ -216,16 +308,69 @@ class SparkResearchAssistant(ResearchAssistantProvider):
             return result
         except (ValidationError, SparkContractError) as exc:
             logger.warning("Structured model output failed stage=schema_validation exception_type=%s; attempting one repair", type(exc).__name__)
-            return await self._repair_and_validate(messages, result_type, contract_validator)
+            return await self._repair_and_validate(
+                messages,
+                result_type,
+                contract_validator,
+                invalid_payload=payload,
+                validation_error=self._brief_validation_error(exc),
+                resource_type=resource_type,
+            )
 
     async def _repair_and_validate(
         self, messages: list[dict[str, str]], result_type: type[ModelT],
         contract_validator: Callable[[ModelT], object] | None,
+        *,
+        invalid_payload: dict[str, Any] | None = None,
+        validation_error: str | None = None,
+        resource_type: ResourceType | None = None,
     ) -> ModelT:
-        repaired = await self._client.chat_json([
-            *messages,
-            {"role": "user", "content": "The previous output violates the JSON contract. Repair it once and return only one JSON object satisfying every required field, type, database-ID constraint, and minimum array length."},
-        ], repair=False)
+        repair_request: dict[str, Any] = {
+            "task": "Repair the previous invalid output once. Return only one JSON object satisfying the contract.",
+            "invalidPayload": invalid_payload,
+            "validationError": validation_error,
+        }
+        if result_type is TeachingResourceGenerationResult:
+            if resource_type == ResourceType.ASSESSMENT:
+                invalid_json: object = invalid_payload
+                if isinstance(invalid_payload, dict):
+                    content = invalid_payload.get("content")
+                    blocks = content.get("blocks") if isinstance(content, dict) else None
+                    invalid_json = [
+                        block for block in blocks
+                        if isinstance(block, dict) and block.get("key") in {"criteria", "rubric", "evidence"}
+                    ] if isinstance(blocks, list) else content
+                repair_request.pop("invalidPayload", None)
+                repair_request.update({
+                    "task": "Fix JSON structure only. Do not regenerate or rewrite the teaching content.",
+                    "invalidBlockJson": invalid_json,
+                    "outputTemplate": RESOURCE_OUTPUT_TEMPLATES[ResourceType.ASSESSMENT],
+                })
+            else:
+                repair_request.update({
+                    "outputTemplate": RESOURCE_OUTPUT_TEMPLATES[resource_type] if resource_type else None,
+                    "criticalStructureRules": TEACHING_RESOURCE_STRUCTURE_RULES,
+                    "explicitCorrection": (
+                        "content must be an object containing title/blocks/metadata; "
+                        "key must be inside content.blocks and must not appear at root."
+                    ),
+                })
+        else:
+            repair_request["resultSchema"] = result_type.model_json_schema(by_alias=True)
+        repair_messages = [
+            {"role": "system", "content": "Repair one JSON object. Return JSON only."},
+            {"role": "user", "content": json.dumps(repair_request, ensure_ascii=False)},
+        ]
+        if resource_type:
+            repaired = await self._resource_chat_json(
+                repair_messages, resource_type=resource_type, repair_triggered=True
+            )
+        else:
+            repaired = await self._client.chat_json(repair_messages, repair=False)
+        if result_type is TeachingResourceGenerationResult:
+            repaired = normalize_resource_payload(repaired)
+            if resource_type == ResourceType.ASSESSMENT and isinstance(repaired.get("content"), dict):
+                repaired["content"] = normalize_assessment_content(repaired["content"])
         try:
             result = result_type.model_validate(repaired, extra="forbid")
             if contract_validator is not None:
@@ -233,6 +378,53 @@ class SparkResearchAssistant(ResearchAssistantProvider):
             return result
         except (ValidationError, SparkContractError) as exc:
             raise SparkContractError("Spark JSON violates the required result contract") from exc
+
+    @staticmethod
+    def _brief_validation_error(exc: ValidationError | SparkContractError) -> str:
+        if not isinstance(exc, ValidationError):
+            return str(exc)
+        errors = [
+            {
+                "location": ".".join(str(part) for part in error["loc"]),
+                "message": error["msg"],
+                "type": error["type"],
+            }
+            for error in exc.errors(include_url=False)
+        ]
+        return json.dumps(errors, ensure_ascii=False)
+
+    async def _resource_chat_json(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        resource_type: ResourceType,
+        repair_triggered: bool,
+    ) -> dict[str, Any]:
+        token_limits = (
+            settings.spark_resource_max_tokens,
+            settings.spark_resource_retry_max_tokens,
+        )
+        for attempt, max_tokens in enumerate(token_limits, start=1):
+            try:
+                return await self._client.chat_json(
+                    messages,
+                    repair=False,
+                    max_tokens=max_tokens,
+                    performance_context={
+                        "resource_type": resource_type.value,
+                        "attempt": attempt,
+                        "repair_triggered": repair_triggered,
+                    },
+                )
+            except SparkOutputLengthError:
+                if attempt == len(token_limits):
+                    raise
+                logger.warning(
+                    "Retrying truncated resource output resource_type=%s attempt=%s requested_max_tokens=%s next_max_tokens=%s repair_triggered=%s",
+                    resource_type.value, attempt, max_tokens, token_limits[attempt],
+                    repair_triggered,
+                )
+        raise AssertionError("resource token retry loop exhausted")
 
     @staticmethod
     def _fingerprint(request: BaseModel) -> str:

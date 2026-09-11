@@ -128,10 +128,10 @@ class ResourceSettingsRecommendationResult(ResourceCreationSchema):
 class TeachingResourceGenerationRequest(ResourceCreationSchema):
     resource_type: ResourceType
     project: ResourceCourseContext
-    objectives: list[dict[str, Any]] = Field(min_length=1)
-    pedagogy: dict[str, Any]
-    assessments: list[dict[str, Any]] = Field(min_length=1)
-    activities: list[dict[str, Any]] = Field(min_length=1)
+    objectives: list[dict[str, Any]] = Field(default_factory=list)
+    pedagogy: dict[str, Any] = Field(default_factory=dict)
+    assessments: list[dict[str, Any]] = Field(default_factory=list)
+    activities: list[dict[str, Any]] = Field(default_factory=list)
     common_settings: dict[str, Any] = Field(default_factory=dict)
     resource_settings: dict[str, Any] = Field(default_factory=dict)
     research_evidence: list[dict[str, Any]] = Field(default_factory=list)

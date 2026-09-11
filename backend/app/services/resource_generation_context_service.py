@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.models.course_design import ProjectActivity, ProjectAssessment, ProjectObjective, ProjectPedagogy
 from app.models.course_project import CourseProject
-from app.repositories.evidence_card_repository import EvidenceCardRepository
 from app.schemas.resource_creation import ResourceType, TeachingResourceGenerationRequest
 from app.services.project_service import ProjectNotFoundError
 
@@ -23,6 +22,15 @@ class ResourceGenerationContextService:
         ResourceType.DISCUSSION: "discussion",
         ResourceType.ASSESSMENT: "assessment",
         ResourceType.REFLECTION: "reflection",
+    }
+    _CONTEXT_FIELDS = {
+        ResourceType.TEACHER_GUIDE: {"objectives", "pedagogy", "activities", "assessments"},
+        ResourceType.WORKSHEET: {"objectives", "activities"},
+        ResourceType.TASK_CARD: {"objectives", "activities"},
+        ResourceType.AI_CASE: {"objectives", "pedagogy", "activities"},
+        ResourceType.DISCUSSION: {"objectives", "pedagogy", "activities"},
+        ResourceType.ASSESSMENT: {"objectives", "activities", "assessments"},
+        ResourceType.REFLECTION: {"objectives", "activities", "assessments"},
     }
 
     def __init__(self, db: Session) -> None:
@@ -85,17 +93,11 @@ class ResourceGenerationContextService:
             "assessmentNote": item.assessment_note, "scaffolds": item.scaffolds_json or [],
             "objectiveRefs": item.objective_refs_json or [],
         } for item in activities]
-        evidence = [{
-            "researchFinding": card.main_finding,
-            "applicableAudience": card.participants,
-            "recommendedStrategies": card.recommended_strategies_json or [],
-            "implementationConditions": card.implementation_conditions_json or [],
-            "teachingImplications": card.teaching_implication,
-            "limitations": card.limitation,
-            "source": card.source_document,
-        } for card in EvidenceCardRepository(self.db).list_confirmed_by_project(project_id=project_id)]
         all_settings = resource_settings or {}
         own_settings = all_settings.get(self._SETTINGS_KEYS[kind], {})
+        context_fields = self._CONTEXT_FIELDS[kind]
+        common = self._bounded_settings(common_settings or {})
+        own = self._bounded_settings(own_settings if isinstance(own_settings, dict) else {})
 
         return TeachingResourceGenerationRequest.model_validate({
             "resourceType": kind,
@@ -112,25 +114,31 @@ class ResourceGenerationContextService:
                 "id": item.id, "content": item.content, "sequenceNo": item.sequence_no,
                 "standardRefs": item.standard_refs_json or [], "literacyRefs": item.literacy_refs_json or [],
                 "rationale": item.rationale,
-            } for item in objectives],
+            } for item in objectives] if "objectives" in context_fields else [],
             "pedagogy": {
                 "id": pedagogy.id, "primaryMethodId": pedagogy.primary_method_id,
                 "secondaryMethodId": pedagogy.secondary_method_id, "customName": pedagogy.custom_name,
                 "description": pedagogy.custom_description or pedagogy.rationale,
                 "suitableFor": pedagogy.suitable_for_json or [], "riskNote": pedagogy.risk_note,
-            },
+            } if "pedagogy" in context_fields else {},
             "assessments": [{
                 "id": item.id, "objectiveId": item.objective_id, "task": item.task_content,
                 "studentEvidence": item.student_evidence_json or [], "criteria": item.criteria_json or [],
                 "rationale": item.rationale,
-            } for item in assessments],
-            "activities": activity_data,
-            "courseBlueprint": {
-                "classHours": project.class_hours, "lessonMinutes": project.lesson_minutes,
-                "totalActivityMinutes": sum(item.duration for item in activities),
-                "activityOrder": [{"id": item.id, "sequenceNo": item.sequence_no, "name": item.name, "duration": item.duration} for item in activities],
-            },
-            "researchEvidence": evidence,
-            "commonSettings": common_settings or {},
-            "resourceSettings": own_settings if isinstance(own_settings, dict) else {},
+            } for item in assessments] if "assessments" in context_fields else [],
+            "activities": activity_data if "activities" in context_fields else [],
+            "researchEvidence": [],
+            "courseBlueprint": None,
+            "commonSettings": common,
+            "resourceSettings": own,
         })
+
+    @classmethod
+    def _bounded_settings(cls, value: Any, key: str | None = None) -> Any:
+        if isinstance(value, dict):
+            return {item_key: cls._bounded_settings(item, item_key) for item_key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._bounded_settings(item) for item in value]
+        if isinstance(value, int) and key in {"quantity", "questionCount", "taskCount", "turns"}:
+            return min(3, max(1, value))
+        return value
