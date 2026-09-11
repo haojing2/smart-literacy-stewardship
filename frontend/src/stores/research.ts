@@ -112,6 +112,13 @@ function messageFromError(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+class IndexingTimeoutError extends Error {
+  constructor() {
+    super('文本解析已完成，知识索引仍在后台构建，请稍后刷新。')
+    this.name = 'IndexingTimeoutError'
+  }
+}
+
 function isStaleEvidenceError(error: unknown): boolean {
   if (!isAxiosError<{ code?: number; detail?: { code?: number } }>(error)) return false
   const code = error.response?.data?.code ?? error.response?.data?.detail?.code
@@ -279,7 +286,13 @@ export const useResearchStore = defineStore('research', () => {
   async function waitForIndexReady(projectId: number, resourceId: number) {
     const deadline = Date.now() + 120_000
     while (Date.now() < deadline) {
-      const latest = (await getProjectResearchResourcesApi(projectId)).data.data
+      let latest: ResearchResource[]
+      try {
+        latest = (await getProjectResearchResourcesApi(projectId)).data.data
+      } catch {
+        await new Promise((resolve) => window.setTimeout(resolve, 900))
+        continue
+      }
       const refreshed = latest.find((item) => item.resourceId === resourceId)
       if (!refreshed) throw new Error('上传的研究资源已不存在')
       const localIndex = resources.value.findIndex((item) => item.resourceId === resourceId)
@@ -290,7 +303,7 @@ export const useResearchStore = defineStore('research', () => {
       }
       await new Promise((resolve) => window.setTimeout(resolve, 900))
     }
-    throw new Error('论文知识索引在 120 秒内未就绪，请稍后重试')
+    throw new IndexingTimeoutError()
   }
 
   async function refreshActiveResearchState() {
@@ -391,7 +404,7 @@ export const useResearchStore = defineStore('research', () => {
     isUploading.value = true
     uploadStatus.value = 'UPLOADING'
     const placeholderId = -Date.now()
-    let processingStage: 'upload' | 'text-extraction' | 'ai-analysis' = 'upload'
+    let processingStage: 'upload' | 'text-extraction' | 'indexing' | 'ai-analysis' = 'upload'
     let uploadedResource: ResearchResource | null = null
     resources.value.push({
       resourceId: placeholderId,
@@ -443,7 +456,9 @@ export const useResearchStore = defineStore('research', () => {
       addSystemMessage('研究资源解析完成')
 
       if (!useMock) {
+        processingStage = 'indexing'
         uploadStatus.value = 'INDEXING'
+        uploaded.indexStatus = 'indexing'
         addSystemMessage('正在建立研究知识索引…')
         Object.assign(uploaded, await waitForIndexReady(project.projectId, uploaded.resourceId))
         addSystemMessage('研究知识索引完成')
@@ -484,16 +499,24 @@ export const useResearchStore = defineStore('research', () => {
       uploadStatus.value = 'ANALYZED'
     } catch (requestError) {
       const resource = uploadedResource
-        ?? resources.value.find((item) => item.resourceId === placeholderId)
+        ? resources.value.find((item) => item.resourceId === uploadedResource?.resourceId) ?? uploadedResource
+        : resources.value.find((item) => item.resourceId === placeholderId)
       if (resource) {
-        resource.processingStatus = 'FAILED'
+        if (processingStage === 'indexing') {
+          resource.processingStatus = 'TEXT_EXTRACTED'
+          resource.indexStatus = requestError instanceof IndexingTimeoutError ? 'indexing' : 'error'
+        } else {
+          resource.processingStatus = 'FAILED'
+        }
         resource.errorMessage = messageFromError(
           requestError,
           processingStage === 'upload'
             ? '文件上传失败'
             : processingStage === 'text-extraction'
               ? '文本提取失败'
-              : 'AI研究解析失败',
+              : processingStage === 'indexing'
+                ? '知识索引构建失败'
+                : 'AI研究解析失败',
         )
       }
       uploadStatus.value = 'FAILED'
@@ -517,7 +540,7 @@ export const useResearchStore = defineStore('research', () => {
     isExtracting.value = true
     error.value = ''
     resource.processingStatus = 'TEXT_EXTRACTING'
-    let processingStage: 'text-extraction' | 'ai-analysis' = 'text-extraction'
+    let processingStage: 'text-extraction' | 'indexing' | 'ai-analysis' = 'text-extraction'
     addSystemMessage('正在重新解析研究资源……')
     try {
       const extracted = useMock
@@ -528,13 +551,18 @@ export const useResearchStore = defineStore('research', () => {
               .processingStatus as UploadStatus,
           }
       Object.assign(resource, extracted)
-      isAnalyzing.value = true
-      processingStage = 'ai-analysis'
+      resource.processingStatus = 'TEXT_EXTRACTED'
       if (useMock) {
+        isAnalyzing.value = true
+        processingStage = 'ai-analysis'
         const snapshot = await researchMockService.createSession(project.projectId, resourceId, project.topic)
         applySnapshot(snapshot)
       } else {
+        processingStage = 'indexing'
+        resource.indexStatus = 'indexing'
         Object.assign(resource, await waitForIndexReady(project.projectId, resourceId))
+        isAnalyzing.value = true
+        processingStage = 'ai-analysis'
         const payload = (await createResearchSessionApi(project.projectId, resourceId)).data.data
         let resourceEvidence: EvidenceCard | null = null
         if (payload.evidenceCardId) {
@@ -552,12 +580,22 @@ export const useResearchStore = defineStore('research', () => {
       }
       addSystemMessage('研究资源重新解析完成')
     } catch (requestError) {
-      resource.processingStatus = 'FAILED'
-      resource.errorMessage = messageFromError(
+      const currentResource = resources.value.find((item) => item.resourceId === resourceId) ?? resource
+      if (processingStage === 'indexing') {
+        currentResource.processingStatus = 'TEXT_EXTRACTED'
+        currentResource.indexStatus = requestError instanceof IndexingTimeoutError ? 'indexing' : 'error'
+      } else {
+        currentResource.processingStatus = 'FAILED'
+      }
+      currentResource.errorMessage = messageFromError(
         requestError,
-        processingStage === 'ai-analysis' ? 'AI研究解析失败' : '文本提取失败',
+        processingStage === 'text-extraction'
+          ? '文本提取失败'
+          : processingStage === 'indexing'
+            ? '知识索引构建失败'
+            : 'AI研究解析失败',
       )
-      error.value = resource.errorMessage
+      error.value = currentResource.errorMessage
     } finally {
       isExtracting.value = false
       isAnalyzing.value = false

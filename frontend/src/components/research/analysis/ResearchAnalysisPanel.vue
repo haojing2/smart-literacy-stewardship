@@ -108,7 +108,14 @@ watch(() => props.analysis, syncDraft, { deep: true })
         <el-form-item label="研究主题"><el-input v-model="draft.researchTopic" /></el-form-item>
         <el-form-item label="AI素养维度" class="full-row"><el-checkbox-group v-model="draft.aiLiteracyDimensions"><el-checkbox v-for="item in dimensions" :key="item.value" :value="item.value">{{ item.label }}</el-checkbox></el-checkbox-group></el-form-item>
         <el-form-item label="教学策略"><el-input v-model="draft.teachingStrategies" type="textarea" :rows="3" placeholder="每行一项" /></el-form-item>
-        <el-form-item label="干预时间"><el-input v-model="draft.intervention" /></el-form-item>
+        <el-form-item label="实施条件">
+          <el-input
+            v-model="draft.intervention"
+            type="textarea"
+            :rows="2"
+            placeholder="如干预周期、课时安排、课堂环境或技术条件"
+          />
+        </el-form-item>
         <el-form-item label="评价工具"><el-input v-model="draft.assessmentTools" type="textarea" :rows="2" placeholder="每行一项" /></el-form-item>
         <el-form-item label="主要研究结果"><el-input v-model="draft.mainFindings" type="textarea" :rows="3" placeholder="每行一项" /></el-form-item>
         <el-form-item label="研究局限" class="full-row"><el-input v-model="draft.limitations" type="textarea" :rows="3" placeholder="每行一项" /></el-form-item>

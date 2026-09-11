@@ -66,9 +66,10 @@ class Settings(BaseSettings):
 
     llm_provider: str = "mock"
     spark_api_key: str | None = None
-    spark_api_base: str = "https://spark-api-open.xf-yun.com/v1"
-    spark_model_id: str = "generalv3.5"
-    spark_user_id: str = "123456"
+    spark_api_base: str = "https://maas-api.cn-huabei-1.xf-yun.com/v2"
+    spark_model_id: str = "spark-x2.5-4b"
+    spark_lora_id: str = "0"
+    spark_max_tokens: int = 8192
     spark_timeout_seconds: float = 120.0
 
     # Assistant credentials deliberately do not reuse the OpenAI-compatible

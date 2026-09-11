@@ -1,6 +1,6 @@
 import http from './http'
 
-export const AI_REQUEST_TIMEOUT = 130_000
+export const AI_REQUEST_TIMEOUT = 260_000
 const aiRequest = { timeout: AI_REQUEST_TIMEOUT }
 
 export interface ApiEnvelope<T> { code: number; message: string; data: T; requestId: string }

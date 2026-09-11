@@ -77,11 +77,8 @@ class SparkResearchAgent(ResearchAgentProvider):
             payload = SparkResearchAgentClient.extract_json_object(content)
             result = ResearchChatResult.model_validate(payload, extra="forbid")
         except (ResearchAgentParseError, ValidationError):
-            # The configured Research Agent commonly returns a normal answer.
-            # Structured analysis enrichment is optional and must never make
-            # an otherwise successful conversation fail.
             result = ResearchChatResult(
-                message=content,
+                message=self._safe_chat_fallback(content),
                 analysis_patch=None,
                 evidence_interpretations=[],
             )
@@ -90,6 +87,28 @@ class SparkResearchAgent(ResearchAgentProvider):
             request_fingerprint=self._fingerprint(request),
             data=result,
         )
+
+    @staticmethod
+    def _safe_chat_fallback(content: str) -> str:
+        """Keep useful plain text while preventing internal schema leakage."""
+        schema_markers = (
+            '"$defs"', "$defs", "additionalProperties", "ResearchAnalysisPatch",
+            "ResearchChatResult", "model_json_schema",
+        )
+        marker_positions = [
+            content.find(marker) for marker in schema_markers if content.find(marker) >= 0
+        ]
+        if not marker_positions:
+            return content.strip()
+
+        prefix = content[:min(marker_positions)]
+        cut_at = max(prefix.rfind("```"), prefix.rfind("{"))
+        if cut_at >= 0:
+            prefix = prefix[:cut_at]
+        cleaned = prefix.strip().rstrip("：:，,\n ")
+        if cleaned:
+            return cleaned
+        return "抱歉，当前回答格式异常，请稍后重试。"
 
     async def summarize_conversation(
         self, request: ResearchConversationSummaryRequest

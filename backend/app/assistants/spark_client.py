@@ -82,11 +82,19 @@ class SparkLLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
-        request: dict[str, Any] = {"model": settings.spark_model_id, "messages": messages, "stream": False, "user": settings.spark_user_id}
+        request: dict[str, Any] = {
+            "model": settings.spark_model_id,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_tokens or settings.spark_max_tokens,
+            "extra_headers": {"lora_id": settings.spark_lora_id},
+            "extra_body": {
+                "search_disable": True,
+                "enable_thinking": False,
+            },
+        }
         if temperature is not None:
             request["temperature"] = temperature
-        if max_tokens is not None:
-            request["max_tokens"] = max_tokens
         try:
             response = await self._client.chat.completions.create(**request)  # type: ignore[arg-type]
         except APITimeoutError as exc:
@@ -103,8 +111,31 @@ class SparkLLMClient:
 
         if not response.choices:
             raise SparkResponseError("Spark response has no choices")
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        message = choice.message
+        content = message.content
         if not isinstance(content, str) or not content.strip():
+            refusal = getattr(message, "refusal", None)
+            tool_calls = getattr(message, "tool_calls", None)
+            model_extra = getattr(message, "model_extra", None)
+            has_reasoning = bool(
+                isinstance(model_extra, dict)
+                and model_extra.get("reasoning_content")
+            )
+            finish_reason = getattr(choice, "finish_reason", None)
+            logger.warning(
+                "Spark returned empty content model=%s finish_reason=%s usage=%s refusal=%s tool_calls=%s has_reasoning=%s",
+                getattr(response, "model", None),
+                finish_reason,
+                getattr(response, "usage", None),
+                refusal,
+                tool_calls,
+                has_reasoning,
+            )
+            if refusal:
+                raise SparkResponseError("Spark declined to generate the requested content")
+            if finish_reason == "length":
+                raise SparkResponseError("Spark output exceeded max token limit")
             raise SparkResponseError("Spark response content is empty")
         return content.strip()
 
@@ -116,7 +147,12 @@ class SparkLLMClient:
                 model=settings.spark_model_id,
                 messages=messages,  # type: ignore[arg-type]
                 stream=True,
-                user=settings.spark_user_id,
+                max_tokens=settings.spark_max_tokens,
+                extra_headers={"lora_id": settings.spark_lora_id},
+                extra_body={
+                    "search_disable": True,
+                    "enable_thinking": False,
+                },
             )
             received_content = False
             async for chunk in stream:

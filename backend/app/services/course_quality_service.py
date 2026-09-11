@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
@@ -40,8 +42,10 @@ class CourseQualityService:
 
     _PROMPT = """检查当前课程设计，不生成或改写课程内容。针对认知负荷、活动复杂度、支架充分性、
 过程性评价、目标—活动一致性、目标—评价一致性和 Evidence Fidelity，输出结构化检查项。
-仅依据输入的研究证据，不得编造文献、作者、年份或页码。需要教师可应用的建议，使用
-ADD_SCAFFOLD 或 ADD_PROCESS_EVIDENCE，并在 evidence.target 中给出 type、id 和新增内容。"""
+仅依据输入的研究证据，不得编造文献、作者、年份或页码。需要教师可应用的建议时，checkType
+仅用于系统执行；evidence.target 仅保存 type、id、scaffold、studentEvidence 等机器参数。
+suggestion 必须是面向教师的简洁自然中文，禁止出现 ADD_SCAFFOLD、ADD_PROCESS_EVIDENCE、
+id:、type:、content: 等内部字段。"""
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -304,8 +308,44 @@ ADD_SCAFFOLD 或 ADD_PROCESS_EVIDENCE，并在 evidence.target 中给出 type、
         return QualityCheck(
             project_id=project_id, check_type=proposal.check_type,
             status=proposal.status, issue=proposal.issue, reason=proposal.reason,
-            suggestion=proposal.suggestion, evidence_json=proposal.evidence,
+            suggestion=CourseQualityService._sanitize_suggestion(
+                proposal.check_type, proposal.suggestion, proposal.evidence
+            ), evidence_json=proposal.evidence,
         )
+
+    @staticmethod
+    def _sanitize_suggestion(
+        check_type: str, suggestion: str | None, evidence: dict[str, object],
+    ) -> str | None:
+        if not suggestion:
+            return suggestion
+        internal_pattern = re.compile(
+            r"ADD_SCAFFOLD|ADD_PROCESS_EVIDENCE|(?:^|[,，;；]\s*)(?:id|type|content)\s*:",
+            re.IGNORECASE,
+        )
+        if not internal_pattern.search(suggestion):
+            return suggestion
+
+        target = evidence.get("target") if isinstance(evidence, dict) else None
+        if isinstance(target, dict):
+            scaffold = target.get("scaffold")
+            student_evidence = target.get("studentEvidence")
+            if check_type == "ADD_SCAFFOLD" and isinstance(scaffold, str) and scaffold.strip():
+                return f"建议在相应教学活动中增加学习支架：{scaffold.strip()}"
+            if (
+                check_type == "ADD_PROCESS_EVIDENCE"
+                and isinstance(student_evidence, str)
+                and student_evidence.strip()
+            ):
+                return f"建议在相应评价任务中补充过程性评价证据：{student_evidence.strip()}"
+
+        content_match = re.search(r"content\s*:\s*(.+)$", suggestion, re.IGNORECASE)
+        if content_match and content_match.group(1).strip():
+            return content_match.group(1).strip()
+        cleaned = re.sub(r"ADD_SCAFFOLD|ADD_PROCESS_EVIDENCE", "", suggestion, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?:id|type)\s*:\s*[^,，;；]+[,，;；]?", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"content\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip(" ：:,，;；") or "请根据该检查项完善课程设计。"
 
     @staticmethod
     def _quality_checked_stale_sections(project: CourseProject) -> list:
@@ -340,7 +380,9 @@ ADD_SCAFFOLD 或 ADD_PROCESS_EVIDENCE，并在 evidence.target 中给出 type、
             {
                 "qualityCheckId": item.id, "checkType": item.check_type,
                 "status": item.status, "issue": item.issue, "reason": item.reason,
-                "suggestion": item.suggestion, "evidence": item.evidence_json or {},
+                "suggestion": CourseQualityService._sanitize_suggestion(
+                    item.check_type, item.suggestion, item.evidence_json or {}
+                ), "evidence": item.evidence_json or {},
             }
             for item in checks
         ]

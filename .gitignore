@@ -58,6 +58,7 @@ backend/tests/*
 !backend/tests/test_aliyun_embedding.py
 !backend/tests/test_research_analysis_resilience.py
 !backend/tests/test_login_startup.py
+!backend/tests/test_admin_rbac.py
 !backend/tests/test_resource_creation_recovery.py
 !backend/tests/test_research_chat_followup_retrieval.py
 !backend/tests/test_spark_llm_configuration.py

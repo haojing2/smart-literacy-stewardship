@@ -11,5 +11,14 @@ export interface LoginResponse {
   }
 }
 
+export interface RegisterResponse {
+  code: number
+  message: string
+  data: { status: 'PENDING'; message: string }
+}
+
 export const login = (username: string, password: string) =>
   http.post<LoginResponse>('/auth/login', { username, password })
+
+export const register = (username: string, displayName: string, password: string) =>
+  http.post<RegisterResponse>('/auth/register', { username, displayName, password })

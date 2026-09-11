@@ -46,6 +46,18 @@ const isRunningQualityCheck = ref(false)
 const hasDiagnosis = ref(false)
 const diagnosis = ref({ coreProblem: '', existingFoundation: '', learningDifficulties: [] as string[], constraints: [] as string[] })
 const qualityResult = ref<{ completionChecks: any[]; qualitySummary: any; suggestions: any[] }>({ completionChecks: [], qualitySummary: {}, suggestions: [] })
+const qualityCheckLabels: Record<string, string> = {
+  CONTEXT_COMPLETE: '教学情境完整',
+  OBJECTIVE_CONFIRMED: '教学目标已确认',
+  PEDAGOGY_CONFIRMED: '教学策略已确认',
+  OBJECTIVE_ASSESSMENT_ALIGNMENT: '目标与评价一致',
+  OBJECTIVE_ACTIVITY_ALIGNMENT: '目标与活动一致',
+  ACTIVITY_DURATION: '活动时长合理',
+  AI_ROLE_DEFINED: 'AI角色明确',
+  ADD_SCAFFOLD: '增加学习支架',
+  ADD_PROCESS_EVIDENCE: '补充过程性评价证据',
+}
+const qualityCheckLabel = (checkType: string) => qualityCheckLabels[checkType] ?? '课程质量检查'
 type LearningGoal = {
   id: number
   text: string
@@ -521,8 +533,8 @@ onMounted(async () => {
 
     <section v-else class="workspace-card next-step-placeholder">
       <div class="optimization-header"><h2>优化完善</h2><p>检查课程整体一致性，并完成最后调整。</p></div>
-      <section class="optimization-section"><h3>课程完整性检查</h3><ul class="completion-checklist"><li v-for="check in qualityResult.completionChecks" :key="check.qualityCheckId">{{ check.checkType }}：{{ check.status === 'PASS' ? '通过' : check.issue }}</li></ul></section>
-      <section class="optimization-section suggestions"><h3>智能检查建议</h3><p class="quality-label">整体设计质量：<strong>{{ qualityResult.qualitySummary.warnings ? '需优化' : '良好' }}</strong></p><article v-for="suggestion in qualityResult.suggestions" :key="suggestion.qualityCheckId"><h4>{{ suggestion.issue || suggestion.checkType }}</h4><p>{{ suggestion.reason }}</p><div><span>{{ suggestion.suggestion }}</span><el-button @click="applySuggestion(suggestion.qualityCheckId)">应用建议</el-button></div></article></section>
+      <section class="optimization-section"><h3>课程完整性检查</h3><ul class="completion-checklist"><li v-for="check in qualityResult.completionChecks" :key="check.qualityCheckId">{{ qualityCheckLabel(check.checkType) }}：{{ check.status === 'PASS' ? '通过' : check.issue }}</li></ul></section>
+      <section class="optimization-section suggestions"><h3>智能检查建议</h3><p class="quality-label">整体设计质量：<strong>{{ qualityResult.qualitySummary.warnings ? '需优化' : '良好' }}</strong></p><article v-for="suggestion in qualityResult.suggestions" :key="suggestion.qualityCheckId"><h4>{{ qualityCheckLabel(suggestion.checkType) }}</h4><p>{{ suggestion.issue || suggestion.reason }}</p><div><span>{{ suggestion.suggestion }}</span><el-button @click="applySuggestion(suggestion.qualityCheckId)">应用建议</el-button></div></article></section>
       <section class="optimization-section final-status"><h3>课程设计已完成</h3><p>{{ blueprintStages.length }}个教学环节 · {{ contextForm.duration }}分钟 · {{ confirmedObjectives.length }}个学习目标 · {{ evaluationTasks.filter((task) => task.text.trim()).length }}项核心评价任务 · 已关联研究依据</p></section>
       <footer class="goal-actions final-actions"><el-button @click="currentStep = 5">返回课程蓝图</el-button><div><el-button @click="designPreviewVisible = true">生成完整教学设计</el-button><el-button type="primary" @click="saveToProjects">保存到我的项目</el-button></div></footer>
     </section>

@@ -4,7 +4,7 @@ from app.assistants.prompts._json import build_json_messages
 from app.schemas.research_assistant import (
     EvidenceCardDraftResult, EvidenceCardGenerationRequest, ResearchAnalysisRequest,
     ResearchAnalysisResult, ResearchAnalysisPatch, ResearchAnalysisSupplementRequest,
-    ResearchChatRequest, ResearchChatResult,
+    ResearchChatRequest,
     ResearchConversationSummaryRequest, ResearchConversationSummaryResult,
 )
 
@@ -41,10 +41,14 @@ def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str,
     return _research_chat_context_messages(
         request,
         response_instruction=(
-            "Answer the current question naturally and directly. You may optionally return "
-            "a JSON object matching this schema when you can reliably provide structured "
-            "analysis enrichment, but a normal natural-language answer is preferred:\n"
-            + json.dumps(ResearchChatResult.model_json_schema(by_alias=True), ensure_ascii=False)
+            'Return exactly one JSON object with this fixed top-level structure: '
+            '{"message":"给用户显示的自然语言回答","analysisPatch":null,'
+            '"evidenceInterpretations":[]}. The message value must answer the user naturally '
+            "and directly. Populate analysisPatch or evidenceInterpretations only when they "
+            "are reliably supported by evidence; otherwise keep them null and []. Return "
+            "only the JSON object. Never output JSON Schema, $defs, properties, type, "
+            "required, ResearchAnalysisPatch, ResearchChatResult, or model_json_schema. "
+            "Do not add explanations or Markdown fences before or after the JSON."
         ),
     )
 
@@ -91,7 +95,13 @@ def _research_chat_context_messages(
         "insufficient; provider knowledge may only be supplemental background. Only "
         "propose an analysisPatch when it is supported by retrieved evidence, the "
         "current resource analysis, or explicit conversation. Do not invent a "
-        "sourceExcerpt."
+        "sourceExcerpt. For questions about limitations or applicability boundaries, strictly "
+        "distinguish limitations explicitly stated by the paper from transfer or applicability "
+        "boundaries inferred for the current classroom. If retrieved evidence contains no "
+        "author-stated limitation, say: 当前检索证据中未发现作者明确陈述的研究局限. You may infer "
+        "applicability boundaries from grade level, sample, implementation duration, technical "
+        "environment, or tool requirements, but must label them as 基于当前课堂情境的迁移判断 "
+        "and must not present those inferences as the paper's original conclusions."
     )
     project_lines = [
         f"Project title: {request.project_title or 'Not provided'}",

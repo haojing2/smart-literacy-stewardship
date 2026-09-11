@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, String, UniqueConstraint, func
@@ -11,6 +12,13 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.course_project import CourseProject
+
+
+class UserStatus(IntEnum):
+    PENDING = 0
+    ACTIVE = 1
+    REJECTED = 2
+    DISABLED = 3
 
 
 class SysUser(Base):
@@ -48,7 +56,7 @@ class SysUser(Base):
     status: Mapped[int] = mapped_column(
         TINYINT,
         nullable=False,
-        default=1
+        default=UserStatus.ACTIVE
     )
 
     created_at: Mapped[datetime] = mapped_column(

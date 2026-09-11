@@ -2,14 +2,16 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from app.assistants.spark_client import SparkLLMClient, SparkProviderError
-from app.core.config import settings
+from app.core.config import Settings, settings
 
 
 def test_default_spark_openai_compatible_contract() -> None:
-    assert settings.spark_api_base == "https://spark-api-open.xf-yun.com/v1"
-    assert settings.spark_model_id == "generalv3.5"
-    assert settings.spark_user_id == "123456"
-    assert settings.spark_timeout_seconds == 120.0
+    fields = Settings.model_fields
+    assert fields["spark_api_base"].default == "https://maas-api.cn-huabei-1.xf-yun.com/v2"
+    assert fields["spark_model_id"].default == "spark-x2.5-4b"
+    assert fields["spark_lora_id"].default == "0"
+    assert fields["spark_max_tokens"].default == 8192
+    assert fields["spark_timeout_seconds"].default == 120.0
 
 
 def test_chat_and_stream_read_the_same_model_from_settings() -> None:
@@ -38,6 +40,15 @@ def test_chat_and_stream_read_the_same_model_from_settings() -> None:
 
     assert completion.create.await_args_list[0].kwargs["model"] == settings.spark_model_id
     assert completion.create.await_args_list[1].kwargs["model"] == settings.spark_model_id
+    assert completion.create.await_args_list[0].kwargs["extra_headers"] == {"lora_id": "0"}
+    assert completion.create.await_args_list[1].kwargs["extra_headers"] == {"lora_id": "0"}
+    assert completion.create.await_args_list[0].kwargs["max_tokens"] == settings.spark_max_tokens
+    assert completion.create.await_args_list[1].kwargs["max_tokens"] == settings.spark_max_tokens
+    expected_body = {"search_disable": True, "enable_thinking": False}
+    assert completion.create.await_args_list[0].kwargs["extra_body"] == expected_body
+    assert completion.create.await_args_list[1].kwargs["extra_body"] == expected_body
+    assert "user" not in completion.create.await_args_list[0].kwargs
+    assert "user" not in completion.create.await_args_list[1].kwargs
     assert client_type.call_args.kwargs["base_url"] == settings.spark_api_base
 
 

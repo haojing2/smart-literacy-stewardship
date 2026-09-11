@@ -18,11 +18,16 @@ const menuItems = [
   { name: '资源智创', icon: '✦' },
 ]
 const user = computed(() => JSON.parse(sessionStorage.getItem('current_user') ?? '{}'))
+const roleLabel = computed(() => user.value.role === 'ADMIN' ? '管理员' : '普通用户')
 const isResearchRoute = computed(() => ['project-research', 'research-no-project'].includes(String(route.name)))
 const isCourseDesignRoute = computed(() => ['course-design', 'project-course-design'].includes(String(route.name)))
 const isResourceCreationRoute = computed(() => ['resource-creation', 'project-resource-creation'].includes(String(route.name)))
 const active = ref(isResearchRoute.value ? '研教智联' : isCourseDesignRoute.value ? '课程智设' : isResourceCreationRoute.value ? '资源智创' : '我的项目')
-function logout() { sessionStorage.clear(); router.replace({ name: 'login' }) }
+function logout() {
+  sessionStorage.removeItem('access_token')
+  sessionStorage.removeItem('current_user')
+  router.replace({ name: 'logout' })
+}
 function selectMenu(name: string) {
   active.value = name
   const projectId = String(route.params.projectId || '')
@@ -71,7 +76,7 @@ watch(() => route.name, (name) => {
         <nav><button v-for="item in menuItems" :key="item.name" :class="{active: active === item.name}" @click="selectMenu(item.name)"><span>{{ item.icon }}</span>{{ item.name }}</button></nav>
       </div>
       <div class="account-area">
-        <div class="account"><i>{{ (user.display_name || user.username || '管').slice(0, 1) }}</i><div><strong>{{ user.display_name || user.username || '系统管理员' }}</strong><small>管理员</small></div><button title="退出登录" @click="logout">⇥</button></div>
+        <div class="account"><i>{{ (user.display_name || user.username || '用').slice(0, 1) }}</i><div><strong>{{ user.display_name || user.username || '用户' }}</strong><small>{{ roleLabel }}</small></div><button title="退出登录" @click="logout">⇥</button></div>
         <button class="settings-button" title="系统设置" aria-label="系统设置" @click="active = '系统设置'"><span>⚙</span></button>
       </div>
     </aside>

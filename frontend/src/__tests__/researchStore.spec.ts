@@ -309,6 +309,8 @@ describe('research store message preconditions', () => {
     expect(mocks.createResearchSession).not.toHaveBeenCalled()
     expect(store.uploadStatus).toBe('FAILED')
     expect(store.error).toContain('索引')
+    expect(store.resources.find(item => item.resourceId === 95)?.processingStatus).toBe('TEXT_EXTRACTED')
+    expect(store.resources.find(item => item.resourceId === 95)?.indexStatus).toBe('error')
   })
 
   it('returns false with an explicit recovery error only when session initialization failed', async () => {

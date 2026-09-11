@@ -18,6 +18,8 @@ from app.api.v1.endpoints.course_blueprint import router as course_blueprint_rou
 from app.api.v1.endpoints.design_evidence import router as design_evidence_router
 from app.api.v1.endpoints.course_quality import router as course_quality_router
 from app.api.v1.endpoints.resource_creation import router as resource_creation_router
+from app.api.v1.endpoints.admin_users import router as admin_users_router
+from app.api.v1.endpoints.admin_system import router as admin_system_router
 from app.api.v1.endpoints.research_chat import router as research_chat_router
 from app.api.v1.endpoints.evidence_cards import router as evidence_cards_router
 from app.api.v1.endpoints.research_resources import (
@@ -152,6 +154,8 @@ app.include_router(course_blueprint_router)
 app.include_router(design_evidence_router)
 app.include_router(course_quality_router)
 app.include_router(resource_creation_router)
+app.include_router(admin_users_router)
+app.include_router(admin_system_router)
 app.include_router(research_chat_router)
 app.include_router(evidence_cards_router)
 app.include_router(research_resources_router)
