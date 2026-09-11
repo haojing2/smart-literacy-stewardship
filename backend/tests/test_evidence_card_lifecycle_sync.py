@@ -315,6 +315,50 @@ def test_incomplete_latest_analysis_clears_binding_without_deleting_history(
     assert db.get(EvidenceCard, first.draft.evidence_card_id) is not None
 
 
+def test_get_session_creates_and_binds_missing_card_for_ready_latest_analysis(
+    db: Session, teacher: SysUser
+) -> None:
+    _, _, session, analysis = create_workspace(db, teacher)
+
+    response = ResearchChatService(db, object()).get_session(  # type: ignore[arg-type]
+        current_user_id=teacher.id,
+        session_id=session.id,
+    )
+
+    assert response.evidence_card_id is not None
+    card = db.get(EvidenceCard, response.evidence_card_id)
+    assert card is not None
+    assert card.research_analysis_id == analysis.id
+    db.refresh(session)
+    assert session.evidence_card_id == card.id
+
+
+def test_get_session_reuses_analysis_card_when_binding_is_stale(
+    db: Session, teacher: SysUser
+) -> None:
+    _, _, session, analysis = create_workspace(db, teacher)
+    synchronized = EvidenceCardDraftService(db).ensure_current_draft(
+        current_user_id=teacher.id,
+        session_id=session.id,
+        analysis_id=analysis.id,
+    )
+    assert synchronized.draft is not None
+    expected_card_id = synchronized.draft.evidence_card_id
+    session.evidence_card_id = None
+    db.commit()
+
+    response = ResearchChatService(db, object()).get_session(  # type: ignore[arg-type]
+        current_user_id=teacher.id,
+        session_id=session.id,
+    )
+
+    assert response.evidence_card_id == expected_card_id
+    assert db.scalar(select(func.count()).select_from(EvidenceCard).where(
+        EvidenceCard.research_analysis_id == analysis.id,
+        EvidenceCard.source_chunk_id.is_(None),
+    )) == 1
+
+
 def test_retrieval_card_never_becomes_synthesized_response_card(
     db: Session, teacher: SysUser
 ) -> None:

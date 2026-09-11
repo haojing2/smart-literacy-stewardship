@@ -111,6 +111,21 @@ describe('research store message preconditions', () => {
     expect(store.messages.map((message) => message.content)).toEqual(['你好'])
   })
 
+  it('loads project-level evidence card into the active workspace', async () => {
+    mocks.getLatestProjectResearchSession.mockResolvedValue({
+      data: { data: { ...projectSession, evidenceCardId: 301, readiness: ready } },
+    })
+    mocks.getEvidenceCard.mockResolvedValue({ data: { data: backendEvidence(301, 201) } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+
+    expect(mocks.getEvidenceCard).toHaveBeenCalledWith(301)
+    expect(store.evidenceDraft?.evidenceCardId).toBe(301)
+    expect(store.evidenceCount).toBe(1)
+    expect(store.activeAnalysisScope).toBe('PROJECT')
+  })
+
   it('restores resources and the latest resource analysis from backend without localStorage', async () => {
     localStorage.clear()
     mocks.getProjectResearchResources.mockResolvedValue({

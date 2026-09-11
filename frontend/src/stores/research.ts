@@ -306,13 +306,16 @@ export const useResearchStore = defineStore('research', () => {
     throw new IndexingTimeoutError()
   }
 
+  async function loadEvidenceDraft(evidenceCardId: number | null | undefined): Promise<EvidenceCard | null> {
+    if (!evidenceCardId) return null
+    return backendEvidence((await getEvidenceCardApi(evidenceCardId)).data.data)
+  }
+
   async function refreshActiveResearchState() {
     const session = activeSession.value
     if (!session || useMock) return
     const payload = (await getResearchSessionApi(session.sessionId)).data.data
-    const currentEvidence = payload.evidenceCardId
-      ? backendEvidence((await getEvidenceCardApi(payload.evidenceCardId)).data.data)
-      : null
+    const currentEvidence = await loadEvidenceDraft(payload.evidenceCardId)
     applySnapshot({
       session: backendSession(payload),
       messages: payload.messages.map(backendMessage),
@@ -356,11 +359,13 @@ export const useResearchStore = defineStore('research', () => {
         }
       }
       const payload = sessionResponse.data.data
+      const projectEvidence = await loadEvidenceDraft(payload.evidenceCardId)
       applySnapshot({
         session: backendSession(payload),
         messages: payload.messages.map(backendMessage),
         analysis: backendAnalysis(payload.latestAnalysis),
         readiness: payload.readiness,
+        evidenceDraft: projectEvidence,
         analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
       })
 
@@ -369,12 +374,7 @@ export const useResearchStore = defineStore('research', () => {
         const resourcePayload = savedScope?.scope === 'RESOURCE' && savedScope.resourceId
           ? (await getLatestResearchSessionForResourceApi(projectId, savedScope.resourceId)).data.data
           : (await getLatestResourceResearchSessionApi(projectId)).data.data
-        let resourceEvidence: EvidenceCard | null = null
-        if (resourcePayload.evidenceCardId) {
-          resourceEvidence = backendEvidence(
-            (await getEvidenceCardApi(resourcePayload.evidenceCardId)).data.data,
-          )
-        }
+        const resourceEvidence = await loadEvidenceDraft(resourcePayload.evidenceCardId)
         applySnapshot({
           session: backendSession(resourcePayload),
           messages: resourcePayload.messages.map(backendMessage),
@@ -478,10 +478,7 @@ export const useResearchStore = defineStore('research', () => {
       } else {
         const sessionResponse = await createResearchSessionApi(project.projectId, uploaded.resourceId)
         const payload = sessionResponse.data.data
-        let resourceEvidence: EvidenceCard | null = null
-        if (payload.evidenceCardId) {
-          resourceEvidence = backendEvidence((await getEvidenceCardApi(payload.evidenceCardId)).data.data)
-        }
+        const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
           analysis: backendAnalysis(payload.latestAnalysis), readiness: payload.readiness,
@@ -564,10 +561,7 @@ export const useResearchStore = defineStore('research', () => {
         isAnalyzing.value = true
         processingStage = 'ai-analysis'
         const payload = (await createResearchSessionApi(project.projectId, resourceId)).data.data
-        let resourceEvidence: EvidenceCard | null = null
-        if (payload.evidenceCardId) {
-          resourceEvidence = backendEvidence((await getEvidenceCardApi(payload.evidenceCardId)).data.data)
-        }
+        const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
           analysis: backendAnalysis(payload.latestAnalysis), readiness: payload.readiness,
@@ -661,7 +655,7 @@ export const useResearchStore = defineStore('research', () => {
         isGeneratingEvidence.value = normalized.evidenceDraftGenerated
         evidenceDraft.value = useMock
           ? await researchMockService.getEvidenceCard(project.projectId)
-          : backendEvidence((await getEvidenceCardApi(normalized.evidenceCardId)).data.data)
+          : await loadEvidenceDraft(normalized.evidenceCardId)
       } else if (normalized.updatedAnalysis) {
         evidenceDraft.value = null
       }
@@ -699,11 +693,7 @@ export const useResearchStore = defineStore('research', () => {
         analysis.value = { ...response.data.data.latestAnalysis, version: response.data.data.version }
         analysisGenerationStatus.value = 'READY'
         setReadiness(response.data.data.readiness)
-        if (response.data.data.evidenceCardId) {
-          evidenceDraft.value = backendEvidence((await getEvidenceCardApi(response.data.data.evidenceCardId)).data.data)
-        } else {
-          evidenceDraft.value = null
-        }
+        evidenceDraft.value = await loadEvidenceDraft(response.data.data.evidenceCardId)
         if (response.data.data.evidenceDraftGenerated) {
           addSystemMessage('当前核心研究信息已经完整，系统已生成证据卡草稿。', 'EVIDENCE_DRAFT')
         }

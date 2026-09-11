@@ -416,23 +416,11 @@ class ResearchChatService:
         session: ResearchChatSession,
         analysis_record: ResearchAnalysis,
     ) -> None:
-        cards = EvidenceCardDraftService(self.db).repository
-        current = (
-            cards.get_owned_card(
-                evidence_card_id=session.evidence_card_id,
-                user_id=current_user_id,
-            )
-            if session.evidence_card_id is not None
-            else None
+        EvidenceCardDraftService(self.db).ensure_current_draft(
+            current_user_id=current_user_id,
+            session_id=session.id,
+            analysis_id=analysis_record.id,
         )
-        if current is not None and current.research_analysis_id == analysis_record.id:
-            return
-        exact = cards.get_by_analysis_id(analysis_id=analysis_record.id)
-        if exact is not None:
-            self.repository.bind_evidence_card(session, evidence_card=exact)
-        else:
-            self.repository.clear_evidence_card(session)
-        self.db.commit()
 
     async def send_message(
         self,
