@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     spark_max_tokens: int = 8192
     spark_resource_max_tokens: int = 8192
     spark_resource_retry_max_tokens: int = 16384
-    spark_research_analysis_max_tokens: int = 8192
+    spark_research_analysis_max_tokens: int = 4096
     spark_research_analysis_model_id: str | None = None
     spark_timeout_seconds: float = 120.0
 
@@ -85,8 +85,8 @@ class Settings(BaseSettings):
     research_agent_url: str | None = None
     research_agent_domain: str = "generalv3.5"
     research_agent_timeout_seconds: float = 120.0
-    research_analysis_max_chunks: int = 6
-    research_analysis_max_context_chars: int = 9000
+    research_analysis_max_chunks: int = 4
+    research_analysis_max_context_chars: int = 4500
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

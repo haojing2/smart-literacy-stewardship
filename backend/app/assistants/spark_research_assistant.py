@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any, Callable, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from app.assistants.base import ResearchAssistantProvider
 from app.assistants.spark_client import (
@@ -38,9 +39,10 @@ from app.schemas.course_design import (
 )
 from app.schemas.research_assistant import (
     EvidenceCardDraftResult, EvidenceCardGenerationRequest, EvidenceCardGenerationResponse,
+    ResearchAnalysisBatchAResult, ResearchAnalysisBatchBResult, ResearchAnalysisBatchCResult,
     ResearchAnalysisPatch, ResearchAnalysisRequest, ResearchAnalysisResponse, ResearchAnalysisResult,
     ResearchAnalysisSupplementRequest, ResearchAnalysisSupplementResponse, ResearchChatRequest,
-    ResearchChatResponse, ResearchChatResult,
+    ResearchAssistantSchema, ResearchChatResponse, ResearchChatResult,
 )
 from app.services.research_source_validation_service import validate_source_excerpt
 from app.schemas.resource_creation import (
@@ -53,6 +55,49 @@ from app.schemas.resource_creation import (
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 logger = logging.getLogger(__name__)
+
+RESEARCH_ANALYSIS_BATCH_CONTRACTS: dict[str, type[BaseModel]] = {
+    "A": ResearchAnalysisBatchAResult,
+    "B": ResearchAnalysisBatchBResult,
+    "C": ResearchAnalysisBatchCResult,
+}
+RESEARCH_ANALYSIS_FIELD_SPECS: dict[str, tuple[str, object, object]] = {
+    "participants": ("research_subjects", list[str], Field(default_factory=list)),
+    "researchTopic": ("research_topics", list[str], Field(default_factory=list)),
+    "intervention": ("intervention_duration", str | None, None),
+    "aiLiteracyDimensions": ("ai_literacy_dimensions", list[str], Field(default_factory=list)),
+    "teachingStrategies": ("teaching_strategies", list[str], Field(default_factory=list)),
+    "assessmentTools": ("assessment_tools", list[str], Field(default_factory=list)),
+    "mainFindings": ("main_findings", list[str], Field(default_factory=list)),
+    "limitations": ("limitations", list[str], Field(default_factory=list)),
+    "teachingImplications": ("teaching_implications", str | None, None),
+}
+RESEARCH_ANALYSIS_FIELD_CONTRACTS: dict[str, type[BaseModel]] = {
+    field: create_model(
+        f"ResearchAnalysisSingle{field[0].upper()}{field[1:]}Result",
+        __base__=ResearchAssistantSchema,
+        **{attribute: (annotation, default)},
+    )
+    for field, (attribute, annotation, default) in RESEARCH_ANALYSIS_FIELD_SPECS.items()
+}
+RESEARCH_ANALYSIS_BATCH_ALIASES: dict[str, dict[str, str]] = {
+    "A": {
+        "participants": "researchSubjects",
+        "researchSubject": "researchSubjects",
+        "researchTopic": "researchTopics",
+        "intervention": "interventionDuration",
+    },
+    "B": {
+        "aiLiteracyDimension": "aiLiteracyDimensions",
+        "teachingStrategy": "teachingStrategies",
+        "assessmentTool": "assessmentTools",
+    },
+    "C": {
+        "mainFinding": "mainFindings",
+        "limitation": "limitations",
+        "teachingImplication": "teachingImplications",
+    },
+}
 
 
 def normalize_resource_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -147,24 +192,132 @@ class SparkResearchAssistant(ResearchAssistantProvider):
     async def supplement_research_analysis(
         self, request: ResearchAnalysisSupplementRequest
     ) -> ResearchAnalysisSupplementResponse:
-        result = await self._from_messages(
-            build_research_analysis_supplement_messages(request),
-            ResearchAnalysisPatch,
-            max_tokens=settings.spark_research_analysis_max_tokens,
-            model_id=settings.spark_research_analysis_model_id,
-            performance_context={
-                "project_id": request.project_id,
-                "resource_id": request.resource_id,
-                "analysis_batch": request.analysis_batch or "+".join(request.missing_fields),
-                "retrieved_chunks": request.retrieved_chunks,
-                "context_chars": request.context_chars,
-            },
-        )
+        result = await self._research_analysis_batch(request)
         return ResearchAnalysisSupplementResponse(
             provider=self.provider_name,
             request_fingerprint=self._fingerprint(request),
             data=result,
         )
+
+    async def _research_analysis_batch(
+        self, request: ResearchAnalysisSupplementRequest
+    ) -> ResearchAnalysisPatch:
+        batch = request.analysis_batch or ""
+        field = request.analysis_field
+        contract = (
+            RESEARCH_ANALYSIS_FIELD_CONTRACTS.get(field)
+            if field
+            else RESEARCH_ANALYSIS_BATCH_CONTRACTS.get(batch)
+        )
+        if contract is None:
+            raise SparkContractError(
+                f"Unsupported research analysis batch/field: {batch}/{field}"
+            )
+        max_tokens = 2048 if field else settings.spark_research_analysis_max_tokens
+        messages = build_research_analysis_supplement_messages(request)
+        performance_context = {
+            "project_id": request.project_id,
+            "resource_id": request.resource_id,
+            "analysis_batch": batch,
+            "field": field,
+            "retrieved_chunks": request.retrieved_chunks,
+            "retrieved_candidates": request.retrieved_candidates,
+            "selected_chunks": request.selected_chunks,
+            "context_chars": request.context_chars,
+        }
+        started_at = time.perf_counter()
+        repaired = False
+        try:
+            try:
+                payload = await self._client.chat_json(
+                    messages,
+                    repair=False,
+                    max_tokens=max_tokens,
+                    model_id=settings.spark_research_analysis_model_id,
+                    performance_context=performance_context,
+                )
+            except SparkResponseParseError:
+                repaired = True
+                payload = await self._client.chat_json(
+                    [
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": "Return one complete JSON object using only the fixed outputTemplate keys.",
+                        },
+                    ],
+                    repair=False,
+                    max_tokens=max_tokens,
+                    model_id=settings.spark_research_analysis_model_id,
+                    performance_context={**performance_context, "repair_triggered": True},
+                )
+
+            validation_error: str | None = None
+            normalize_result = "NOT_NEEDED"
+            try:
+                validated = contract.model_validate(payload, extra="forbid")
+            except ValidationError as exc:
+                validation_error = self._brief_validation_error(exc)
+                normalized = self._normalize_research_analysis_batch(batch, payload, contract)
+                normalize_result = "CHANGED" if normalized != payload else "UNCHANGED"
+                validated = contract.model_validate(normalized, extra="forbid")
+
+            logger.info(
+                "Research analysis batch validation project_id=%s resource_id=%s "
+                "analysis_batch=%s field=%s validation_error=%s normalize_result=%s "
+                "batch_status=READY repair_triggered=%s elapsed_ms=%s",
+                request.project_id,
+                request.resource_id,
+                batch,
+                field,
+                validation_error,
+                normalize_result,
+                repaired,
+                round((time.perf_counter() - started_at) * 1000),
+            )
+            return ResearchAnalysisPatch.model_validate(
+                validated.model_dump(mode="python", by_alias=False)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Research analysis batch validation project_id=%s resource_id=%s "
+                "analysis_batch=%s field=%s validation_error=%s normalize_result=FAILED "
+                "batch_status=FAILED repair_triggered=%s elapsed_ms=%s failure_type=%s",
+                request.project_id,
+                request.resource_id,
+                batch,
+                field,
+                type(exc).__name__,
+                repaired,
+                round((time.perf_counter() - started_at) * 1000),
+                type(exc).__name__,
+            )
+            raise
+
+    @staticmethod
+    def _normalize_research_analysis_batch(
+        batch: str,
+        payload: dict[str, Any],
+        contract: type[BaseModel],
+    ) -> dict[str, Any]:
+        field_keys = {
+            key: field.alias or key
+            for key, field in contract.model_fields.items()
+        }
+        allowed = set(field_keys.values())
+        aliases = {**field_keys, **RESEARCH_ANALYSIS_BATCH_ALIASES[batch]}
+        normalized: dict[str, Any] = {}
+        for key, value in payload.items():
+            target = aliases.get(key, key)
+            if target not in allowed:
+                continue
+            if target in {
+                "researchSubjects", "researchTopics", "aiLiteracyDimensions",
+                "teachingStrategies", "assessmentTools", "mainFindings", "limitations",
+            } and isinstance(value, str):
+                value = [value]
+            normalized[target] = value
+        return normalized
 
     async def chat(self, request: ResearchChatRequest) -> ResearchChatResponse:
         result = await self._from_messages(build_research_chat_messages(request), ResearchChatResult)

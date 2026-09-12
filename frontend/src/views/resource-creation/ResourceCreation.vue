@@ -502,7 +502,7 @@ onMounted(() => { void initialize() })
           <header><span class="mode-icon adapt-icon" aria-hidden="true">↺</span></header>
           <h3>智能改编已有资源</h3>
           <p>上传已有教案或学习单，根据新的年级、课时、设备条件或教学要求进行改编。</p>
-          <footer><el-button @click="currentMode = 'adapt'">开始智能改编</el-button></footer>
+          <footer><el-button @click="currentMode = 'adapt'">后续更新中...</el-button></footer>
         </article>
       </div>
     </section>

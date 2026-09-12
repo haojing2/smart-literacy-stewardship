@@ -90,7 +90,7 @@ watch(() => props.analysis, syncDraft, { deep: true })
 <template>
   <section class="analysis-panel">
     <div class="panel-heading"><div><h2>{{ scope === 'RESOURCE' ? '单篇论文解析' : '项目综合解析' }}</h2><p>{{ scope === 'RESOURCE' ? `来源：《${sourceLabel}》` : '范围：全部已就绪研究资源' }}</p></div><span v-if="generationStatus !== 'FAILED'">{{ recognizedCount }}/8 已识别</span></div>
-    <div v-if="generationStatus === 'FAILED'" class="analysis-failed"><strong>研究解析失败</strong><p>本次自动结构化解析未成功，这不表示论文没有这些研究信息。</p><el-button type="primary" plain @click="$emit('reanalyze')">重新分析</el-button></div>
+    <div v-if="generationStatus === 'FAILED'" class="analysis-failed"><strong>AI结构化研究解析失败</strong><p>论文文本与知识索引仍可正常使用，可重新执行结构化分析。</p><el-button type="primary" plain @click="$emit('reanalyze')">重新分析</el-button></div>
     <template v-else>
     <p class="generation-status">{{ generationStatus === 'PENDING' ? '解析中' : generationStatus === 'READY' ? '解析完成' : '' }}</p>
     <EvidenceReadiness :score="readinessScore" :status="readinessStatus" :missing-required-fields="missingRequiredFields" />

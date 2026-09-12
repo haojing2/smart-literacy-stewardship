@@ -16,30 +16,39 @@ logger = logging.getLogger(__name__)
 RESEARCH_ANALYSIS_FIELD_QUERIES: dict[str, tuple[str, ...]] = {
     "participants": (
         "研究对象 样本 参与者 被试 学生 年级 人数 participants sample learners research subjects population",
+        "研究方法 样本量 人口统计 招募 分组 methods sample size demographics recruitment groups",
     ),
     "researchTopic": (
         "研究问题 研究目的 研究主题 研究目标 research question purpose objective topic",
+        "摘要 引言 探索 检验 study aim abstract introduction investigated examined",
     ),
     "aiLiteracyDimensions": (
         "能力重点 核心能力 素养 认知 情感 协作 AI素养 ability competence literacy dimensions",
+        "人工智能素养框架 构念 指标 知识 技能 态度 AI literacy framework constructs indicators",
     ),
     "teachingStrategies": (
         "教学策略 教学方法 学习支架 干预措施 教学活动 intervention teaching strategy scaffold procedure",
+        "课堂活动 课程设计 实施步骤 instructional implementation lesson design pedagogy",
     ),
     "intervention": (
         "实验周期 干预时长 周 课时 实施过程 intervention duration weeks lessons treatment",
+        "实施时间表 课程小时 次数 timeline schedule course hours sessions",
     ),
     "assessmentTools": (
         "评价工具 测量工具 问卷 量表 测验 编码框架 assessment measure instrument questionnaire scale test rubric",
+        "数据收集 信度 效度 评分标准 data collection reliability validity evaluation tool",
     ),
     "mainFindings": (
         "研究结果 主要发现 显著 效果 影响 learning outcomes results findings effect",
+        "讨论 结论 研究发现 outcome discussion conclusion evidence improvement",
     ),
     "limitations": (
         "研究局限 研究不足 局限性 未来研究 limitations future research discussion",
+        "可推广性 样本限制 方法限制 generalizability sample methodological limitation",
     ),
     "teachingImplications": (
         "教学启示 实践启示 教育意义 教学建议 implications teaching practice",
+        "教师指导 课程应用 教学意义 pedagogical significance teacher guidance curriculum application",
     ),
 }
 
@@ -69,6 +78,7 @@ class ResearchAnalysisEvidenceCollector:
         project_id: int,
         file_id: int,
         fields: list[str] | None = None,
+        analysis_batch: str | None = None,
         top_k: int = 3,
         max_chunks: int | None = None,
         max_chars: int | None = None,
@@ -88,6 +98,7 @@ class ResearchAnalysisEvidenceCollector:
             if not queries:
                 continue
             ranked: dict[str, ProjectKnowledgeSource] = {}
+            field_candidate_count = 0
             for query in queries:
                 sources = await self.project_knowledge.search_resource(
                     project_id=project_id,
@@ -96,6 +107,7 @@ class ResearchAnalysisEvidenceCollector:
                     top_k=top_k,
                 )
                 retrieved_count += len(sources)
+                field_candidate_count += len(sources)
                 for source in sources:
                     previous = ranked.get(source.chunk_id)
                     if previous is None or source.score > previous.score:
@@ -113,6 +125,16 @@ class ResearchAnalysisEvidenceCollector:
             field_sources[field] = sorted(
                 ranked.values(), key=lambda source: source.score, reverse=True
             )[:top_k]
+            logger.info(
+                "Research analysis field fusion project_id=%s resource_id=%s "
+                "analysis_batch=%s field=%s retrieved_candidates=%s selected_chunks=%s",
+                project_id,
+                file_id,
+                analysis_batch,
+                field,
+                field_candidate_count,
+                [source.chunk_id for source in field_sources[field]],
+            )
 
         # First reserve one best chunk per field, then fill remaining registry slots.
         registry: dict[str, ProjectKnowledgeSource] = {}
@@ -146,11 +168,14 @@ class ResearchAnalysisEvidenceCollector:
         )
         logger.info(
             "Research analysis evidence collected project_id=%s resource_id=%s "
-            "field_coverage=%s unique_chunks=%s analysis_context_chars=%s",
+            "analysis_batch=%s field_coverage=%s retrieved_candidates=%s "
+            "selected_chunks=%s context_chars=%s",
             project_id,
             file_id,
+            analysis_batch,
             bundle.field_coverage,
-            len(bundle.unique_sources),
+            bundle.retrieved_count,
+            [source.chunk_id for source in bundle.unique_sources],
             bundle.context_chars,
         )
         return bundle

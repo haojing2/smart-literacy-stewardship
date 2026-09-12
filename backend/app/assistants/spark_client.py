@@ -127,15 +127,29 @@ class SparkLLMClient:
         completion_details = getattr(usage, "completion_tokens_details", None)
         reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
         finish_reason = getattr(response.choices[0], "finish_reason", None) if response.choices else None
+        is_research_batch = bool((performance_context or {}).get("analysis_batch"))
+        reasoning_exhausted = (
+            is_research_batch
+            and isinstance(reasoning_tokens, int)
+            and reasoning_tokens >= int(request["max_tokens"] * 0.95)
+        )
+        batch_token_exhausted = is_research_batch and (
+            finish_reason == "length" or reasoning_exhausted
+        )
         logger.info(
-            "Spark performance project_id=%s resource_id=%s analysis_batch=%s "
+            "Spark performance model=%s project_id=%s resource_id=%s analysis_batch=%s "
+            "field=%s retrieved_candidates=%s selected_chunks=%s "
             "retrieved_chunks=%s context_chars=%s "
             "resource_type=%s attempt=%s requested_max_tokens=%s prompt_tokens=%s "
             "reasoning_tokens=%s completion_tokens=%s finish_reason=%s elapsed_ms=%s "
-            "normalize_result=%s repair_triggered=%s",
+            "validation_error=%s normalize_result=%s batch_status=%s repair_triggered=%s",
+            request["model"],
             (performance_context or {}).get("project_id"),
             (performance_context or {}).get("resource_id"),
             (performance_context or {}).get("analysis_batch"),
+            (performance_context or {}).get("field"),
+            (performance_context or {}).get("retrieved_candidates"),
+            (performance_context or {}).get("selected_chunks"),
             (performance_context or {}).get("retrieved_chunks"),
             (performance_context or {}).get("context_chars"),
             (performance_context or {}).get("resource_type"),
@@ -146,7 +160,10 @@ class SparkLLMClient:
             getattr(usage, "completion_tokens", None),
             finish_reason,
             elapsed_ms,
+            (performance_context or {}).get("validation_error"),
             (performance_context or {}).get("normalize_result"),
+            "FAILED_TOKEN_EXHAUSTED" if batch_token_exhausted
+            else "PROVIDER_COMPLETED" if is_research_batch else None,
             bool((performance_context or {}).get("repair_triggered", False)),
         )
 
@@ -155,10 +172,13 @@ class SparkLLMClient:
         choice = response.choices[0]
         message = choice.message
         content = message.content
-        if finish_reason == "length" and (
-            not isinstance(content, str)
-            or not content.strip()
-            or self._looks_like_truncated_json(content)
+        if batch_token_exhausted or (
+            finish_reason == "length"
+            and (
+                not isinstance(content, str)
+                or not content.strip()
+                or self._looks_like_truncated_json(content)
+            )
         ):
             logger.warning(
                 "Spark output length exceeded resource_type=%s requested_max_tokens=%s reasoning_tokens=%s",

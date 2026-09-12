@@ -61,11 +61,32 @@ class ResearchAnalysisPatch(ResearchAssistantSchema):
     teaching_implications: str | None = None
 
 
+class ResearchAnalysisBatchAResult(ResearchAssistantSchema):
+    research_subjects: list[str] = Field(default_factory=list)
+    research_topics: list[str] = Field(default_factory=list)
+    intervention_duration: str | None = None
+
+
+class ResearchAnalysisBatchBResult(ResearchAssistantSchema):
+    ai_literacy_dimensions: list[str] = Field(default_factory=list)
+    teaching_strategies: list[str] = Field(default_factory=list)
+    assessment_tools: list[str] = Field(default_factory=list)
+
+
+class ResearchAnalysisBatchCResult(ResearchAssistantSchema):
+    main_findings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    teaching_implications: str | None = None
+
+
 class ResearchAnalysisSupplementRequest(ResearchAssistantSchema):
     project_id: int | None = Field(default=None, gt=0)
     resource_id: int = Field(gt=0)
     analysis_batch: str | None = None
+    analysis_field: str | None = None
     retrieved_chunks: int | None = Field(default=None, ge=0)
+    retrieved_candidates: int | None = Field(default=None, ge=0)
+    selected_chunks: list[str] = Field(default_factory=list)
     context_chars: int | None = Field(default=None, ge=0)
     missing_fields: list[str] = Field(min_length=1)
     analysis_evidence: str = Field(min_length=1)

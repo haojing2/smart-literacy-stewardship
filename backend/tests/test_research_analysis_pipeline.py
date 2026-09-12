@@ -92,6 +92,15 @@ class SequenceProvider:
         return SimpleNamespace(provider="general-spark", data=result)
 
 
+class RecordingEvidenceCollector(ResearchAnalysisEvidenceCollector):
+    def __init__(self):
+        super().__init__(FieldKnowledge())  # type: ignore[arg-type]
+        self.calls = []
+
+    async def collect(self, **kwargs):
+        self.calls.append(kwargs)
+        return await super().collect(**kwargs)
+
 def complete_analysis(**updates) -> ResearchAnalysisResult:
     values = dict(
         research_subjects=["68名本科二年级学生"],
@@ -125,9 +134,10 @@ def test_targeted_supplement_runs_once_and_merges_only_missing_fields() -> None:
         teaching_implications="提供分层支架",
     )
     provider = SequenceProvider([batch_a, batch_b, batch_c])
+    collector = RecordingEvidenceCollector()
     service = ResearchAnalysisExtractionService(
         provider,  # type: ignore[arg-type]
-        ResearchAnalysisEvidenceCollector(FieldKnowledge()),  # type: ignore[arg-type]
+        collector,
     )
 
     result = asyncio.run(
@@ -149,15 +159,18 @@ def test_targeted_supplement_runs_once_and_merges_only_missing_fields() -> None:
     assert result.analysis.assessment_tools == ["学习支架设计准则量表"]
     assert result.analysis.main_findings == batch_c.main_findings
     assert result.diagnostics.supplement_attempted is False
+    assert len(collector.calls) == 3
+    assert all(call["top_k"] == 2 for call in collector.calls)
+    assert all(call["max_chunks"] == 4 for call in collector.calls)
+    assert all(call["max_chars"] == 4500 for call in collector.calls)
 
 
 def test_supplement_still_missing_remains_incomplete_without_looping() -> None:
-    provider = SequenceProvider([
-        ResearchAnalysisPatch(), ResearchAnalysisPatch(), ResearchAnalysisPatch(),
-    ])
+    provider = SequenceProvider([ResearchAnalysisPatch() for _ in range(12)])
+    collector = RecordingEvidenceCollector()
     service = ResearchAnalysisExtractionService(
         provider,  # type: ignore[arg-type]
-        ResearchAnalysisEvidenceCollector(FieldKnowledge()),  # type: ignore[arg-type]
+        collector,
     )
     result = asyncio.run(
         service.extract(
@@ -168,23 +181,68 @@ def test_supplement_still_missing_remains_incomplete_without_looping() -> None:
         result.analysis,
         EvidenceReadinessService.source_metadata_from_knowledge_base(),
     )
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 12
+    assert all(
+        request.analysis_field is not None and len(request.missing_fields) == 1
+        for request in provider.requests[3:]
+    )
+    assert all(call["top_k"] == 2 for call in collector.calls[3:])
+    assert all(call["max_chunks"] == 2 for call in collector.calls[3:])
+    assert all(call["max_chars"] == 2500 for call in collector.calls[3:])
     assert readiness.readiness_status == "INCOMPLETE"
     assert "researchContext" in readiness.missing_required_fields
 
 
 def test_structured_provider_failure_is_propagated_for_failed_status_mapping() -> None:
-    provider = SequenceProvider([SparkTimeoutError("timeout")])
+    provider = SequenceProvider([
+        SparkTimeoutError("timeout-a"),
+        SparkTimeoutError("timeout-b"),
+        SparkTimeoutError("timeout-c"),
+    ])
     service = ResearchAnalysisExtractionService(
         provider,  # type: ignore[arg-type]
         ResearchAnalysisEvidenceCollector(FieldKnowledge()),  # type: ignore[arg-type]
     )
-    with pytest.raises(SparkTimeoutError):
+    with pytest.raises(RuntimeError, match="All research analysis batches failed"):
         asyncio.run(
             service.extract(
                 project_id=7, resource_id=11, project_title=None, project_topic=None
             )
         )
+
+
+def test_one_failed_batch_keeps_other_batch_results() -> None:
+    provider = SequenceProvider([
+        ResearchAnalysisPatch(
+            research_subjects=["Grade 5 students"],
+            research_topics=["AI literacy"],
+            intervention_duration="4 weeks",
+        ),
+        SparkTimeoutError("batch-b exhausted reasoning tokens"),
+        ResearchAnalysisPatch(
+            main_findings=["Verification improved"],
+            limitations=["Single-school sample"],
+            teaching_implications="Use guided practice",
+        ),
+        ResearchAnalysisPatch(ai_literacy_dimensions=["AI knowledge"]),
+        ResearchAnalysisPatch(teaching_strategies=["Guided practice"]),
+        ResearchAnalysisPatch(assessment_tools=["Questionnaire"]),
+    ])
+    service = ResearchAnalysisExtractionService(
+        provider,  # type: ignore[arg-type]
+        ResearchAnalysisEvidenceCollector(FieldKnowledge()),  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(service.extract(
+        project_id=7, resource_id=11, project_title=None, project_topic=None,
+    ))
+
+    assert result.analysis.research_subjects == ["Grade 5 students"]
+    assert result.analysis.ai_literacy_dimensions == ["AI knowledge"]
+    assert result.analysis.teaching_strategies == ["Guided practice"]
+    assert result.analysis.assessment_tools == ["Questionnaire"]
+    assert result.analysis.main_findings == ["Verification improved"]
+    assert result.diagnostics.failed_batches == ["B"]
 
 
 class JsonClient:
@@ -218,16 +276,19 @@ def test_source_excerpt_validation_is_non_blocking(source, excerpt, expected) ->
 
 
 def test_supplement_failure_preserves_first_pass_and_ready_generation() -> None:
-    first = complete_analysis(assessment_tools=[])
-    provider = SequenceProvider([first, SparkContractError("supplement excerpt mismatch")])
+    provider = SequenceProvider([
+        ResearchAnalysisPatch(research_subjects=["students"]),
+        SparkContractError("batch-b contract mismatch"),
+        ResearchAnalysisPatch(main_findings=["supported finding"]),
+    ])
     result = asyncio.run(
         ResearchAnalysisExtractionService(
             provider, ResearchAnalysisEvidenceCollector(FieldKnowledge())  # type: ignore[arg-type]
         ).extract(project_id=7, resource_id=11, project_title=None, project_topic=None)
     )
     assert result.generation_status == "READY"
-    assert result.analysis.research_subjects == first.research_subjects
-    assert result.analysis.main_findings == first.main_findings
+    assert result.analysis.research_subjects == ["students"]
+    assert result.analysis.main_findings == ["supported finding"]
     assert result.diagnostics.supplement_failed is True
 
 
@@ -258,9 +319,11 @@ def test_spark_supplement_contract_excludes_excerpt_and_full_analysis() -> None:
     class SupplementClient:
         def __init__(self):
             self.messages = None
+            self.kwargs = None
 
-        async def chat_json(self, messages, *, repair=False, **_kwargs):
+        async def chat_json(self, messages, *, repair=False, **kwargs):
             self.messages = messages
+            self.kwargs = kwargs
             return {"assessmentTools": ["Questionnaire"]}
 
     client = SupplementClient()
@@ -268,6 +331,8 @@ def test_spark_supplement_contract_excludes_excerpt_and_full_analysis() -> None:
         SparkResearchAssistant(client=client).supplement_research_analysis(  # type: ignore[arg-type]
             ResearchAnalysisSupplementRequest(
                 resource_id=11,
+                analysis_batch="B",
+                analysis_field="assessmentTools",
                 missing_fields=["assessmentTools"],
                 analysis_evidence="[FIELD EVIDENCE: assessmentTools]\nchunk ids: c1",
                 current_analysis=complete_analysis(assessment_tools=[]),
@@ -276,9 +341,48 @@ def test_spark_supplement_contract_excludes_excerpt_and_full_analysis() -> None:
     )
     prompt = client.messages[-1]["content"]
     assert response.data.assessment_tools == ["Questionnaire"]
-    assert '"missingFields": ["assessmentTools"]' in prompt
-    assert '"sourceExcerpt"' not in prompt.split('"resultSchema":', 1)[1]
-    assert '"evidenceReady"' not in prompt.split('"resultSchema":', 1)[1]
+    assert '"outputTemplate"' in prompt
+    assert '"assessmentTools"' in prompt
+    assert '"aiLiteracyDimensions"' not in prompt
+    assert '"teachingStrategies"' not in prompt
+    assert '"researchSubjects"' not in prompt
+    assert '"sourceExcerpt"' not in prompt
+    assert '"resultSchema"' not in prompt
+    assert client.kwargs["max_tokens"] == 2048
+
+
+def test_research_batch_normalizes_aliases_and_drops_extra_fields_without_repair() -> None:
+    class NormalizeClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_json(self, _messages, **_kwargs):
+            self.calls += 1
+            return {
+                "participants": "Grade 5 students",
+                "researchTopic": "AI literacy",
+                "intervention": "4 weeks",
+                "mainFindings": ["must be dropped from batch A"],
+            }
+
+    client = NormalizeClient()
+    response = asyncio.run(
+        SparkResearchAssistant(client=client).supplement_research_analysis(  # type: ignore[arg-type]
+            ResearchAnalysisSupplementRequest(
+                resource_id=11,
+                analysis_batch="A",
+                missing_fields=["participants", "researchTopic", "intervention"],
+                analysis_evidence="[FIELD EVIDENCE: participants]\nchunk ids: c1",
+                current_analysis=ResearchAnalysisResult(),
+            )
+        )
+    )
+
+    assert client.calls == 1
+    assert response.data.research_subjects == ["Grade 5 students"]
+    assert response.data.research_topics == ["AI literacy"]
+    assert response.data.intervention_duration == "4 weeks"
+    assert response.data.main_findings is None
 
 
 class ExtractionDb:

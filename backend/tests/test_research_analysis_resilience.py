@@ -339,8 +339,8 @@ def test_bounded_evidence_respects_chunk_and_character_limits(monkeypatch) -> No
     evidence, sources, retrieved_count = asyncio.run(
         service._prepare_analysis_evidence(project_id=1020, file_id=16)
     )
-    # Nine bilingual field queries are collected independently.
-    assert retrieved_count == 45
+    # Two query variants per field improve recall before local fusion.
+    assert retrieved_count == 90
     assert len(sources) <= 4
     assert len(evidence) <= 600
     assert all(source.file_id == 16 for source in sources)

@@ -368,6 +368,37 @@ describe('research store message preconditions', () => {
     expect(store.resources.find(item => item.resourceId === 98)?.processingStatus).toBe('ANALYZED')
   })
 
+  it('keeps an indexed PDF usable when backend structured analysis fails', async () => {
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    const uploaded = {
+      resourceId: 100, fileName: 'partial.pdf', mimeType: 'application/pdf', fileSize: 10,
+      processingStatus: 'UPLOADED', indexStatus: 'pending',
+    }
+    const ready = { ...uploaded, processingStatus: 'TEXT_EXTRACTED', indexStatus: 'ready' }
+    mocks.uploadResearchResource.mockResolvedValue({ data: { data: uploaded } })
+    mocks.extractResearchText.mockResolvedValue({ data: { data: {
+      resourceId: 100, processingStatus: 'TEXT_EXTRACTED', extractedText: 'text',
+    } } })
+    mocks.getProjectResearchResources
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: { data: [ready] } })
+    mocks.createResearchSession.mockResolvedValue({ data: { data: {
+      ...projectSession, sessionId: 101, resourceId: 100, messages: [],
+      analysisGenerationStatus: 'FAILED',
+    } } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+    await store.uploadAndProcess(new File(['pdf'], 'partial.pdf', { type: 'application/pdf' }))
+
+    const resource = store.resources.find(item => item.resourceId === 100)
+    expect(resource?.processingStatus).toBe('TEXT_EXTRACTED')
+    expect(resource?.indexStatus).toBe('ready')
+    expect(resource?.errorMessage).toBeNull()
+    expect(store.analysisGenerationStatus).toBe('FAILED')
+    expect(store.uploadStatus).toBe('TEXT_EXTRACTED')
+  })
+
   it('stops before session creation when the uploaded resource index fails', async () => {
     mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
     const uploaded = {

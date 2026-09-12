@@ -13,7 +13,7 @@ def test_default_spark_openai_compatible_contract() -> None:
     assert fields["spark_model_id"].default == "spark-x2.5-4b"
     assert fields["spark_lora_id"].default is None
     assert fields["spark_max_tokens"].default == 8192
-    assert fields["spark_research_analysis_max_tokens"].default == 8192
+    assert fields["spark_research_analysis_max_tokens"].default == 4096
     assert fields["spark_research_analysis_model_id"].default is None
     assert fields["spark_timeout_seconds"].default == 120.0
 

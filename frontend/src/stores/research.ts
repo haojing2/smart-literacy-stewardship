@@ -370,9 +370,6 @@ export const useResearchStore = defineStore('research', () => {
   async function createResourceSessionWithRecovery(projectId: number, resourceId: number) {
     try {
       const payload = (await createResearchSessionApi(projectId, resourceId)).data.data
-      if (payload.analysisGenerationStatus === 'FAILED') {
-        throw new Error('AI研究解析失败')
-      }
       return payload
     } catch (requestError) {
       if (!isRequestTimeout(requestError)) throw requestError
@@ -386,10 +383,8 @@ export const useResearchStore = defineStore('research', () => {
           projectId,
           resourceId,
         )).data.data
-        if (payload.analysisGenerationStatus === 'FAILED') {
-          throw new Error('AI研究解析失败')
-        }
-        if (payload.analysisGenerationStatus === 'READY') return payload
+        if (payload.analysisGenerationStatus === 'READY'
+          || payload.analysisGenerationStatus === 'FAILED') return payload
       } catch (pollError) {
         if (!isAxiosError(pollError)) throw pollError
       }
@@ -581,11 +576,18 @@ export const useResearchStore = defineStore('research', () => {
           scope: 'RESOURCE', resourceId: uploaded.resourceId,
         }))
         localStorage.setItem(resourcesStorageKey(project.projectId), JSON.stringify(resources.value))
-        addSystemMessage('论文解析完成，可在右侧查看研究解析与证据卡。')
+        addSystemMessage(payload.analysisGenerationStatus === 'FAILED'
+          ? 'AI研究解析失败，论文文本和知识索引仍可使用，可在右侧重新分析。'
+          : '论文解析完成，可在右侧查看研究解析与证据卡。')
       }
       const completedResource = resources.value.find((item) => item.resourceId === uploaded.resourceId)
-      if (completedResource) completedResource.processingStatus = 'ANALYZED'
-      uploadStatus.value = 'ANALYZED'
+      if (completedResource) {
+        completedResource.processingStatus = analysisGenerationStatus.value === 'FAILED'
+          ? 'TEXT_EXTRACTED'
+          : 'ANALYZED'
+        completedResource.errorMessage = null
+      }
+      uploadStatus.value = analysisGenerationStatus.value === 'FAILED' ? 'TEXT_EXTRACTED' : 'ANALYZED'
     } catch (requestError) {
       const resource = uploadedResource
         ? resources.value.find((item) => item.resourceId === uploadedResource?.resourceId) ?? uploadedResource
@@ -612,6 +614,17 @@ export const useResearchStore = defineStore('research', () => {
         uploadStatus.value = 'ANALYZING'
         error.value = ''
         addSystemMessage(requestError.message)
+        return
+      }
+      if (processingStage === 'ai-analysis') {
+        if (resource) {
+          resource.processingStatus = 'TEXT_EXTRACTED'
+          resource.indexStatus = 'ready'
+          resource.errorMessage = null
+        }
+        uploadStatus.value = 'TEXT_EXTRACTED'
+        error.value = messageFromError(requestError, 'AI研究解析失败，可稍后重新分析')
+        addSystemMessage(error.value)
         return
       }
       if (resource) {
@@ -686,7 +699,9 @@ export const useResearchStore = defineStore('research', () => {
           scope: 'RESOURCE', resourceId,
         }))
       }
-      addSystemMessage('研究资源重新解析完成')
+      addSystemMessage(analysisGenerationStatus.value === 'FAILED'
+        ? 'AI研究解析失败，论文文本和知识索引仍可使用，可在右侧重新分析。'
+        : '研究资源重新解析完成')
     } catch (requestError) {
       const currentResource = resources.value.find((item) => item.resourceId === resourceId) ?? resource
       if (requestError instanceof IndexingTimeoutError) {
@@ -705,6 +720,14 @@ export const useResearchStore = defineStore('research', () => {
         currentResource.errorMessage = null
         error.value = ''
         addSystemMessage(requestError.message)
+        return
+      }
+      if (processingStage === 'ai-analysis') {
+        currentResource.processingStatus = 'TEXT_EXTRACTED'
+        currentResource.indexStatus = 'ready'
+        currentResource.errorMessage = null
+        error.value = messageFromError(requestError, 'AI研究解析失败，可稍后重新分析')
+        addSystemMessage(error.value)
         return
       }
       if (processingStage === 'indexing') {

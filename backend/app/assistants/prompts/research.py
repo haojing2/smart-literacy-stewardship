@@ -3,40 +3,81 @@ import json
 from app.assistants.prompts._json import build_json_messages
 from app.schemas.research_assistant import (
     EvidenceCardDraftResult, EvidenceCardGenerationRequest, ResearchAnalysisRequest,
-    ResearchAnalysisResult, ResearchAnalysisPatch, ResearchAnalysisSupplementRequest,
+    ResearchAnalysisSupplementRequest,
     ResearchChatRequest,
     ResearchConversationSummaryRequest, ResearchConversationSummaryResult,
 )
 
 def build_research_analysis_messages(request: ResearchAnalysisRequest) -> list[dict[str, str]]:
-    return build_json_messages(
-        "analysisEvidence is field-aware: FIELD EVIDENCE assigns chunk ids to each field, "
-        "and CHUNK REGISTRY contains each chunk once. For every output field, inspect only "
-        "its assigned chunks and extract only explicitly supported facts. Never fill a field "
-        "from unrelated background text or invent participants, duration, instruments, "
-        "findings, strategies, or limitations. Missing list fields must be []; "
-        "missing nullable fields must be null. Use only resultSchema camelCase keys; fields "
-        "such as participants, method, and sampleSize are forbidden. sourceExcerpt is "
-        "optional and must be a verbatim substring of analysisEvidence when supplied. Always "
-        "return evidenceReady=false; the application decides readiness. Return JSON only. "
-        "Extract every result field independently.",
-        request,
-        ResearchAnalysisResult,
-    )
+    prompt = {
+        "task": "Extract a bounded research analysis from FIELD EVIDENCE.",
+        "rules": [
+            "Use only evidence assigned to each field and do not invent facts.",
+            "Use only outputTemplate keys; no additional fields.",
+            "Missing list values must be []; missing nullable values must be null.",
+            "sourceExcerpt must be a verbatim substring of analysisEvidence or null.",
+            "Return JSON only, without Markdown or explanation.",
+        ],
+        "outputTemplate": {
+            "researchSubjects": [], "researchTopics": [], "aiLiteracyDimensions": [],
+            "teachingStrategies": [], "interventionDuration": None,
+            "assessmentTools": [], "mainFindings": [], "limitations": [],
+            "teachingImplications": None, "sourceExcerpt": None, "evidenceReady": False,
+        },
+        "analysisEvidence": request.analysis_evidence or request.extracted_text,
+    }
+    return [
+        {"role": "system", "content": "Extract an evidence-grounded research JSON object."},
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ]
 
 
 def build_research_analysis_supplement_messages(
     request: ResearchAnalysisSupplementRequest,
 ) -> list[dict[str, str]]:
-    return build_json_messages(
-        "Complete only the requested missing fields in an existing research-paper analysis. "
-        "Use only the supplied FIELD EVIDENCE. Return values only for missingFields; do not "
-        "rewrite any already validated field. Do not return sourceExcerpt or evidenceReady. "
-        "Do not infer unsupported information. If evidence is insufficient, leave the "
-        "requested list field empty or nullable field null. Return JSON only.",
-        request,
-        ResearchAnalysisPatch,
-    )
+    templates = {
+        "A": {"researchSubjects": [], "researchTopics": [], "interventionDuration": None},
+        "B": {"aiLiteracyDimensions": [], "teachingStrategies": [], "assessmentTools": []},
+        "C": {"mainFindings": [], "limitations": [], "teachingImplications": None},
+    }
+    template = templates.get(request.analysis_batch or "")
+    if template is None:
+        raise ValueError("A valid research analysis batch is required")
+    if request.analysis_field:
+        field_keys = {
+            "participants": "researchSubjects",
+            "researchTopic": "researchTopics",
+            "intervention": "interventionDuration",
+            "aiLiteracyDimensions": "aiLiteracyDimensions",
+            "teachingStrategies": "teachingStrategies",
+            "assessmentTools": "assessmentTools",
+            "mainFindings": "mainFindings",
+            "limitations": "limitations",
+            "teachingImplications": "teachingImplications",
+        }
+        output_key = field_keys.get(request.analysis_field)
+        if output_key is None or output_key not in template:
+            raise ValueError("A valid research analysis field is required")
+        template = {output_key: template[output_key]}
+    prompt = {
+        "task": "Extract only the requested research-analysis field or batch from FIELD EVIDENCE.",
+        "analysisBatch": request.analysis_batch,
+        "field": request.analysis_field,
+        "rules": [
+            "Return exactly one JSON object matching outputTemplate.",
+            "Use only outputTemplate keys; no additional fields.",
+            "Use only evidence assigned to each field.",
+            "Do not infer unsupported facts.",
+            "Missing list values must be []; missing nullable values must be null.",
+            "Return JSON only, without Markdown or explanation.",
+        ],
+        "outputTemplate": template,
+        "analysisEvidence": request.analysis_evidence,
+    }
+    return [
+        {"role": "system", "content": "Extract a small, evidence-grounded research JSON object."},
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ]
 def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str, str]]:
     return _research_chat_context_messages(
         request,
