@@ -75,6 +75,10 @@ class ResearchRetrievalScopeError(RuntimeError):
     pass
 
 
+class ResearchProjectKnowledgeUnavailableError(RuntimeError):
+    pass
+
+
 class ResearchChatInactiveError(RuntimeError):
     pass
 
@@ -693,6 +697,16 @@ class ResearchChatService:
         source_metadata = EvidenceReadinessService.source_metadata_from_knowledge_base()
         current_analysis_record = self._require_latest_session_analysis(session.id)
         current_analysis = self._validated_analysis(current_analysis_record, source_metadata)
+        ready_resource_count = self._ready_project_resource_count(
+            project_id=session.project_id, user_id=current_user_id
+        )
+        logger.info(
+            "Research project knowledge gate project_id=%s resource_id=%s "
+            "ready_resource_count=%s",
+            session.project_id,
+            session.resource_id,
+            ready_resource_count,
+        )
         user_message = self.repository.create_message(
             session_id=session.id,
             role="USER",
@@ -707,6 +721,44 @@ class ResearchChatService:
         except Exception:
             self.db.rollback()
             raise
+
+
+        if ready_resource_count == 0:
+            assistant_message = self.repository.create_message(
+                session_id=session.id,
+                role="ASSISTANT",
+                sequence_no=self.repository.next_sequence_no(session_id=session.id),
+                content="当前项目尚未添加可检索的研究资源，请先上传研究论文。",
+                metadata={
+                    **self._message_metadata(session, delivery_status="COMPLETED"),
+                    "retrievalScope": "PROJECT",
+                    "resourceId": None,
+                    "retrievalStatus": "EMPTY",
+                    "retrievalQuery": content.strip(),
+                    "queryRewriteStatus": "FALLBACK",
+                    "retrievedSources": [],
+                },
+            )
+            self._mark_user_message_completed(user_message, session=session)
+            self.repository.touch_session(session)
+            try:
+                self.db.commit()
+                self.db.refresh(assistant_message)
+            except Exception:
+                self.db.rollback()
+                raise
+            return ResearchChatSendMessageResponse(
+                session_id=session.id,
+                user_message=self._message_response(user_message),
+                assistant_message=self._message_response(assistant_message),
+                analysis_patch=None,
+                latest_analysis=current_analysis,
+                readiness=ResearchAnalysisStateService.readiness(
+                    current_analysis, source_metadata
+                ),
+                evidence_draft_generated=False,
+                evidence_card_id=session.evidence_card_id,
+            )
 
         try:
             chat_request = await self._chat_request(
@@ -795,6 +847,42 @@ class ResearchChatService:
         session: ResearchChatSession,
         content: str,
     ) -> AsyncIterator[str]:
+        ready_resource_count = self._ready_project_resource_count(
+            project_id=session.project_id, user_id=current_user_id
+        )
+        logger.info(
+            "Research project stream knowledge gate project_id=%s resource_id=%s "
+            "ready_resource_count=%s",
+            session.project_id,
+            session.resource_id,
+            ready_resource_count,
+        )
+        if ready_resource_count == 0:
+            unavailable_message = "当前项目尚未添加可检索的研究资源，请先上传研究论文。"
+            user_message = self.repository.create_message(
+                session_id=session.id,
+                role="USER",
+                sequence_no=self.repository.next_sequence_no(session_id=session.id),
+                content=content,
+                metadata=self._message_metadata(session, delivery_status="COMPLETED"),
+            )
+            assistant_message = self.repository.create_message(
+                session_id=session.id,
+                role="ASSISTANT",
+                sequence_no=self.repository.next_sequence_no(session_id=session.id),
+                content=unavailable_message,
+                metadata=self._message_metadata(session, delivery_status="COMPLETED"),
+            )
+            self.repository.touch_session(session)
+            try:
+                self.db.commit()
+                self.db.refresh(user_message)
+                self.db.refresh(assistant_message)
+            except Exception:
+                self.db.rollback()
+                raise
+            yield unavailable_message
+            return
         user_message = self.repository.create_message(
             session_id=session.id,
             role="USER",
@@ -883,6 +971,21 @@ class ResearchChatService:
             current_question=content,
         )
         retrieval_scope = "RESOURCE" if session.resource_id is not None else "PROJECT"
+        if retrieval_scope == "PROJECT":
+            ready_resource_count = self._ready_project_resource_count(
+                project_id=session.project_id, user_id=current_user_id
+            )
+            logger.info(
+                "Research project retrieval isolation project_id=%s resource_id=%s "
+                "ready_resource_count=%s",
+                session.project_id,
+                session.resource_id,
+                ready_resource_count,
+            )
+            if ready_resource_count == 0:
+                raise ResearchProjectKnowledgeUnavailableError(
+                    "Current project has no ready research resources"
+                )
         resource_filename = None
         if session.resource_id is not None and hasattr(self.repository, "get_resource"):
             resource = self.repository.get_resource(resource_id=session.resource_id)
@@ -1076,6 +1179,14 @@ class ResearchChatService:
             "projectId": session.project_id,
             "deliveryStatus": delivery_status,
         }
+
+    def _ready_project_resource_count(self, *, project_id: int, user_id: int) -> int:
+        counter = getattr(self.repository, "count_ready_project_resources", None)
+        if counter is None:
+            # Fail closed: a repository that cannot prove current-project ready
+            # resources must never allow the global provider to answer as if it could.
+            return 0
+        return int(counter(project_id=project_id, user_id=user_id))
 
     @classmethod
     def _assistant_message_metadata(

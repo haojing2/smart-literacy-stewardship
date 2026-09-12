@@ -126,6 +126,13 @@ class IndexingTimeoutError extends Error {
   }
 }
 
+class AnalysisStillProcessingError extends Error {
+  constructor() {
+    super('研究解析仍在处理中，请稍后刷新')
+    this.name = 'AnalysisStillProcessingError'
+  }
+}
+
 function isStaleEvidenceError(error: unknown): boolean {
   if (!isAxiosError<{ code?: number; detail?: { code?: number } }>(error)) return false
   const code = error.response?.data?.code ?? error.response?.data?.detail?.code
@@ -360,6 +367,37 @@ export const useResearchStore = defineStore('research', () => {
     }
   }
 
+  async function createResourceSessionWithRecovery(projectId: number, resourceId: number) {
+    try {
+      const payload = (await createResearchSessionApi(projectId, resourceId)).data.data
+      if (payload.analysisGenerationStatus === 'FAILED') {
+        throw new Error('AI研究解析失败')
+      }
+      return payload
+    } catch (requestError) {
+      if (!isRequestTimeout(requestError)) throw requestError
+      addSystemMessage('研究解析仍在处理中，请稍后刷新')
+    }
+
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      try {
+        const payload = (await getLatestResearchSessionForResourceApi(
+          projectId,
+          resourceId,
+        )).data.data
+        if (payload.analysisGenerationStatus === 'FAILED') {
+          throw new Error('AI研究解析失败')
+        }
+        if (payload.analysisGenerationStatus === 'READY') return payload
+      } catch (pollError) {
+        if (!isAxiosError(pollError)) throw pollError
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 900))
+    }
+    throw new AnalysisStillProcessingError()
+  }
+
   async function loadEvidenceDraft(evidenceCardId: number | null | undefined): Promise<EvidenceCard | null> {
     if (!evidenceCardId) return null
     return backendEvidence((await getEvidenceCardApi(evidenceCardId)).data.data)
@@ -528,8 +566,10 @@ export const useResearchStore = defineStore('research', () => {
         )
         applySnapshot(snapshot)
       } else {
-        const sessionResponse = await createResearchSessionApi(project.projectId, uploaded.resourceId)
-        const payload = sessionResponse.data.data
+        const payload = await createResourceSessionWithRecovery(
+          project.projectId,
+          uploaded.resourceId,
+        )
         const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
@@ -559,6 +599,17 @@ export const useResearchStore = defineStore('research', () => {
           }
         }
         uploadStatus.value = resource?.processingStatus === 'TEXT_EXTRACTING' ? 'TEXT_EXTRACTING' : 'INDEXING'
+        error.value = ''
+        addSystemMessage(requestError.message)
+        return
+      }
+      if (requestError instanceof AnalysisStillProcessingError) {
+        if (resource) {
+          resource.processingStatus = 'TEXT_EXTRACTED'
+          resource.indexStatus = 'ready'
+          resource.errorMessage = null
+        }
+        uploadStatus.value = 'ANALYZING'
         error.value = ''
         addSystemMessage(requestError.message)
         return
@@ -623,7 +674,7 @@ export const useResearchStore = defineStore('research', () => {
         }
         isAnalyzing.value = true
         processingStage = 'ai-analysis'
-        const payload = (await createResearchSessionApi(project.projectId, resourceId)).data.data
+        const payload = await createResourceSessionWithRecovery(project.projectId, resourceId)
         const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
@@ -644,6 +695,14 @@ export const useResearchStore = defineStore('research', () => {
           currentResource.processingStatus = 'TEXT_EXTRACTED'
           currentResource.indexStatus = currentResource.indexStatus === 'ready' ? 'ready' : 'indexing'
         }
+        error.value = ''
+        addSystemMessage(requestError.message)
+        return
+      }
+      if (requestError instanceof AnalysisStillProcessingError) {
+        currentResource.processingStatus = 'TEXT_EXTRACTED'
+        currentResource.indexStatus = 'ready'
+        currentResource.errorMessage = null
         error.value = ''
         addSystemMessage(requestError.message)
         return

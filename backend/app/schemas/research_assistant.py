@@ -20,6 +20,7 @@ class ResearchAssistantSchema(BaseModel):
 
 
 class ResearchAnalysisRequest(ResearchAssistantSchema):
+    project_id: int | None = Field(default=None, gt=0)
     resource_id: int = Field(gt=0)
     analysis_evidence: str | None = Field(default=None, min_length=1)
     # Compatibility-only input for historical callers; new analysis uses bounded evidence.
@@ -61,7 +62,11 @@ class ResearchAnalysisPatch(ResearchAssistantSchema):
 
 
 class ResearchAnalysisSupplementRequest(ResearchAssistantSchema):
+    project_id: int | None = Field(default=None, gt=0)
     resource_id: int = Field(gt=0)
+    analysis_batch: str | None = None
+    retrieved_chunks: int | None = Field(default=None, ge=0)
+    context_chars: int | None = Field(default=None, ge=0)
     missing_fields: list[str] = Field(min_length=1)
     analysis_evidence: str = Field(min_length=1)
     current_analysis: ResearchAnalysisResult

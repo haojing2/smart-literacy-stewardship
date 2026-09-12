@@ -109,12 +109,22 @@ def complete_analysis(**updates) -> ResearchAnalysisResult:
 
 
 def test_targeted_supplement_runs_once_and_merges_only_missing_fields() -> None:
-    first = complete_analysis(research_subjects=[], assessment_tools=[])
-    supplement = ResearchAnalysisPatch(
+    batch_a = ResearchAnalysisPatch(
         research_subjects=["68名本科二年级学生"],
+        research_topics=["智能化学习支架"],
+        intervention_duration="5周",
+    )
+    batch_b = ResearchAnalysisPatch(
+        ai_literacy_dimensions=["AI_COGNITION"],
+        teaching_strategies=["智能化学习支架"],
         assessment_tools=["学习支架设计准则量表"],
     )
-    provider = SequenceProvider([first, supplement])
+    batch_c = ResearchAnalysisPatch(
+        main_findings=["实验组表现显著提升"],
+        limitations=["单一大学样本"],
+        teaching_implications="提供分层支架",
+    )
+    provider = SequenceProvider([batch_a, batch_b, batch_c])
     service = ResearchAnalysisExtractionService(
         provider,  # type: ignore[arg-type]
         ResearchAnalysisEvidenceCollector(FieldKnowledge()),  # type: ignore[arg-type]
@@ -129,17 +139,22 @@ def test_targeted_supplement_runs_once_and_merges_only_missing_fields() -> None:
         )
     )
 
-    assert len(provider.requests) == 2
-    assert provider.requests[1].missing_fields == ["participants", "assessmentTools"]
+    assert len(provider.requests) == 3
+    assert [request.missing_fields for request in provider.requests] == [
+        ["participants", "researchTopic", "intervention"],
+        ["aiLiteracyDimensions", "teachingStrategies", "assessmentTools"],
+        ["mainFindings", "limitations", "teachingImplications"],
+    ]
     assert result.analysis.research_subjects == ["68名本科二年级学生"]
     assert result.analysis.assessment_tools == ["学习支架设计准则量表"]
-    assert result.analysis.main_findings == first.main_findings
-    assert result.diagnostics.supplement_attempted is True
+    assert result.analysis.main_findings == batch_c.main_findings
+    assert result.diagnostics.supplement_attempted is False
 
 
 def test_supplement_still_missing_remains_incomplete_without_looping() -> None:
-    first = complete_analysis(research_subjects=[], research_topics=[])
-    provider = SequenceProvider([first, ResearchAnalysisPatch()])
+    provider = SequenceProvider([
+        ResearchAnalysisPatch(), ResearchAnalysisPatch(), ResearchAnalysisPatch(),
+    ])
     service = ResearchAnalysisExtractionService(
         provider,  # type: ignore[arg-type]
         ResearchAnalysisEvidenceCollector(FieldKnowledge()),  # type: ignore[arg-type]
@@ -153,7 +168,7 @@ def test_supplement_still_missing_remains_incomplete_without_looping() -> None:
         result.analysis,
         EvidenceReadinessService.source_metadata_from_knowledge_base(),
     )
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 3
     assert readiness.readiness_status == "INCOMPLETE"
     assert "researchContext" in readiness.missing_required_fields
 
@@ -176,7 +191,7 @@ class JsonClient:
     def __init__(self, source_excerpt: str):
         self.source_excerpt = source_excerpt
 
-    async def chat_json(self, _messages, *, repair=False):
+    async def chat_json(self, _messages, *, repair=False, **_kwargs):
         return {
             "researchSubjects": ["68 undergraduate students"],
             "mainFindings": ["The intervention improved outcomes"],
@@ -244,7 +259,7 @@ def test_spark_supplement_contract_excludes_excerpt_and_full_analysis() -> None:
         def __init__(self):
             self.messages = None
 
-        async def chat_json(self, messages, *, repair=False):
+        async def chat_json(self, messages, *, repair=False, **_kwargs):
             self.messages = messages
             return {"assessmentTools": ["Questionnaire"]}
 

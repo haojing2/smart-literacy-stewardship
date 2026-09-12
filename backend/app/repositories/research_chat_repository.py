@@ -65,6 +65,19 @@ class ResearchChatRepository:
             statement = statement.with_for_update()
         return self.db.scalar(statement)
 
+    def count_ready_project_resources(self, *, project_id: int, user_id: int) -> int:
+        return int(self.db.scalar(
+            select(func.count(ResearchResource.id))
+            .join(CourseProject, CourseProject.id == ResearchResource.project_id)
+            .where(
+                ResearchResource.project_id == project_id,
+                ResearchResource.user_id == user_id,
+                ResearchResource.index_status == "ready",
+                CourseProject.user_id == user_id,
+                CourseProject.is_deleted.is_(False),
+            )
+        ) or 0)
+
     def get_owned_session(
         self, *, session_id: int, user_id: int, for_update: bool = False
     ) -> ResearchChatSession | None:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import logging
 
 from app.assistants.base import ResearchAssistantProvider
+from app.core.config import settings
 from app.schemas.research_assistant import (
     ResearchAnalysisPatch,
-    ResearchAnalysisRequest,
     ResearchAnalysisResult,
     ResearchAnalysisSupplementRequest,
 )
@@ -29,6 +30,12 @@ FIELD_ATTRIBUTES = {
     "mainFindings": "main_findings",
     "limitations": "limitations",
     "teachingImplications": "teaching_implications",
+}
+
+ANALYSIS_BATCHES: dict[str, list[str]] = {
+    "A": ["participants", "researchTopic", "intervention"],
+    "B": ["aiLiteracyDimensions", "teachingStrategies", "assessmentTools"],
+    "C": ["mainFindings", "limitations", "teachingImplications"],
 }
 
 
@@ -71,60 +78,84 @@ class ResearchAnalysisExtractionService:
         project_title: str | None,
         project_topic: str | None,
     ) -> ResearchAnalysisExtractionResult:
-        evidence = await self.evidence_collector.collect(
-            project_id=project_id, file_id=resource_id
-        )
-        first_response = await self.provider.analyze_research(
-            ResearchAnalysisRequest(
-                resource_id=resource_id,
-                analysis_evidence=evidence.prompt_context,
-                project_title=project_title,
-                project_topic=project_topic,
-            )
-        )
-        first = first_response.data
-        missing = self._missing_fields(first, evidence)
-        supplement_attempted = bool(missing)
-        supplement_failed = False
-        final = first
-        if supplement_attempted:
-            try:
-                supplement_evidence = await self.evidence_collector.collect(
+        semaphore = asyncio.Semaphore(2)
+        empty = ResearchAnalysisResult()
+
+        async def extract_batch(
+            batch_name: str, fields: list[str]
+        ) -> tuple[str, ResearchAnalysisEvidenceBundle, ResearchAnalysisPatch, str]:
+            async with semaphore:
+                evidence = await self.evidence_collector.collect(
                     project_id=project_id,
                     file_id=resource_id,
-                    fields=missing,
+                    fields=fields,
+                    top_k=2,
+                    max_chunks=min(settings.research_analysis_max_chunks, 6),
+                    max_chars=min(settings.research_analysis_max_context_chars, 10_000),
                 )
-                supplement_response = await self.provider.supplement_research_analysis(
+                logger.info(
+                    "Research analysis batch prepared project_id=%s resource_id=%s "
+                    "analysis_batch=%s retrieved_chunks=%s context_chars=%s",
+                    project_id,
+                    resource_id,
+                    batch_name,
+                    len(evidence.unique_sources),
+                    evidence.context_chars,
+                )
+                response = await self.provider.supplement_research_analysis(
                     ResearchAnalysisSupplementRequest(
+                        project_id=project_id,
                         resource_id=resource_id,
-                        missing_fields=missing,
-                        analysis_evidence=supplement_evidence.prompt_context,
-                        current_analysis=first,
+                        analysis_batch=batch_name,
+                        retrieved_chunks=len(evidence.unique_sources),
+                        context_chars=evidence.context_chars,
+                        missing_fields=fields,
+                        analysis_evidence=evidence.prompt_context,
+                        current_analysis=empty,
                     )
                 )
-                final = self._merge_missing(first, supplement_response.data, missing)
-            except Exception as exc:
-                supplement_failed = True
-                final = first
-                logger.warning(
-                    "Research analysis supplement degraded resource_id=%s "
-                    "missing_fields=%s failure_type=%s fallback=FIRST_PASS_RESULT "
-                    "analysis_generation_status=READY",
-                    resource_id,
-                    missing,
-                    type(exc).__name__,
-                )
+                return batch_name, evidence, response.data, response.provider
 
+        batches = await asyncio.gather(*(
+            extract_batch(batch_name, fields)
+            for batch_name, fields in ANALYSIS_BATCHES.items()
+        ))
+        merged: dict[str, object] = empty.model_dump(mode="python", by_alias=False)
+        field_sources: dict[str, list] = {}
+        unique_sources = {}
+        retrieved_count = 0
+        context_parts: list[str] = []
+        provider_name = "unknown"
+        for batch_name, batch_evidence, patch, provider_name in batches:
+            context_parts.append(f"[ANALYSIS BATCH {batch_name}]\n{batch_evidence.prompt_context}")
+            retrieved_count += batch_evidence.retrieved_count
+            field_sources.update(batch_evidence.field_sources)
+            for source in batch_evidence.unique_sources:
+                unique_sources.setdefault(source.chunk_id, source)
+            for field in ANALYSIS_BATCHES[batch_name]:
+                attribute = FIELD_ATTRIBUTES[field]
+                value = getattr(patch, attribute)
+                if self._has_value(value):
+                    merged[attribute] = value
+
+        final = ResearchAnalysisResult.model_validate(merged)
+        evidence = ResearchAnalysisEvidenceBundle(
+            prompt_context="\n\n".join(context_parts),
+            field_sources=field_sources,
+            unique_sources=list(unique_sources.values()),
+            retrieved_count=retrieved_count,
+            context_chars=sum(batch.context_chars for _, batch, _, _ in batches),
+        )
         final_missing = self._missing_fields(final, evidence, require_evidence=False)
         diagnostics = ResearchAnalysisDiagnostics(
             retrieved_field_coverage=evidence.field_coverage,
-            first_pass_fields=self._non_empty_count(first),
-            missing_fields_after_first_pass=missing,
-            supplement_attempted=supplement_attempted,
-            supplement_failed=supplement_failed,
+            first_pass_fields=self._non_empty_count(final),
+            missing_fields_after_first_pass=final_missing,
+            supplement_attempted=False,
+            supplement_failed=False,
             final_fields=self._non_empty_count(final),
             missing_fields_after_supplement=final_missing,
-            provider=first_response.provider,
+            provider=provider_name,
         )
         logger.info(
             "Research structured analysis project_id=%s resource_id=%s analysis_provider=%s "
@@ -136,8 +167,8 @@ class ResearchAnalysisExtractionService:
             diagnostics.provider,
             diagnostics.first_pass_fields,
             diagnostics.missing_fields_after_first_pass,
-            diagnostics.supplement_attempted,
-            diagnostics.supplement_failed,
+            False,
+            False,
             diagnostics.missing_fields_after_supplement,
         )
         return ResearchAnalysisExtractionResult(final, evidence, diagnostics)

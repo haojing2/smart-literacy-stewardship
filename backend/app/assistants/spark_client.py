@@ -91,9 +91,10 @@ class SparkLLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         performance_context: dict[str, object] | None = None,
+        model_id: str | None = None,
     ) -> str:
         request: dict[str, Any] = {
-            "model": settings.spark_model_id,
+            "model": model_id or settings.spark_model_id,
             "messages": messages,
             "stream": False,
             "max_tokens": max_tokens or settings.spark_max_tokens,
@@ -127,7 +128,16 @@ class SparkLLMClient:
         reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
         finish_reason = getattr(response.choices[0], "finish_reason", None) if response.choices else None
         logger.info(
-            "Spark performance resource_type=%s attempt=%s requested_max_tokens=%s prompt_tokens=%s reasoning_tokens=%s completion_tokens=%s finish_reason=%s provider_elapsed_ms=%s normalize_result=%s repair_triggered=%s",
+            "Spark performance project_id=%s resource_id=%s analysis_batch=%s "
+            "retrieved_chunks=%s context_chars=%s "
+            "resource_type=%s attempt=%s requested_max_tokens=%s prompt_tokens=%s "
+            "reasoning_tokens=%s completion_tokens=%s finish_reason=%s elapsed_ms=%s "
+            "normalize_result=%s repair_triggered=%s",
+            (performance_context or {}).get("project_id"),
+            (performance_context or {}).get("resource_id"),
+            (performance_context or {}).get("analysis_batch"),
+            (performance_context or {}).get("retrieved_chunks"),
+            (performance_context or {}).get("context_chars"),
             (performance_context or {}).get("resource_type"),
             (performance_context or {}).get("attempt", 1),
             request["max_tokens"],
@@ -230,10 +240,12 @@ class SparkLLMClient:
         repair: bool = True,
         performance_context: dict[str, object] | None = None,
         max_tokens: int | None = None,
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         content = await self.chat(
             messages, temperature=0.2, max_tokens=max_tokens,
             performance_context=performance_context,
+            model_id=model_id,
         )
         try:
             return self._extract_json_object(content)
@@ -246,6 +258,7 @@ class SparkLLMClient:
                 temperature=0.2,
                 max_tokens=max_tokens,
                 performance_context={**(performance_context or {}), "repair_triggered": True},
+                model_id=model_id,
             )
             return self._extract_json_object(repaired)
 

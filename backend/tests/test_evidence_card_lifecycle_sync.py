@@ -88,6 +88,58 @@ def create_workspace(
     return project, resource, session, record
 
 
+def test_project_chat_without_ready_resources_never_calls_provider(
+    db: Session, teacher: SysUser
+) -> None:
+    project = CourseProject(
+        user_id=teacher.id,
+        title="Empty research project",
+        topic="AI literacy",
+        project_type="NEW_TOPIC",
+        workflow_state="DRAFT",
+        stale_sections_json=[],
+    )
+    db.add(project)
+    db.flush()
+    session = ResearchChatSession(
+        user_id=teacher.id,
+        project_id=project.id,
+        resource_id=None,
+        title="Project research chat",
+        status="ACTIVE",
+    )
+    db.add(session)
+    db.flush()
+    db.add(ResearchAnalysis(
+        project_id=project.id,
+        session_id=session.id,
+        resource_id=None,
+        version=1,
+        structured_data_json=ResearchAnalysisResult().model_dump(mode="json"),
+        field_sources_json={},
+        status="VALIDATED",
+    ))
+    db.commit()
+
+    class Provider:
+        calls = 0
+
+        async def chat(self, _request):
+            self.calls += 1
+            raise AssertionError("Provider must not be called without project-local evidence")
+
+    provider = Provider()
+    response = asyncio.run(ResearchChatService(db, provider).send_message(  # type: ignore[arg-type]
+        current_user_id=teacher.id,
+        session_id=session.id,
+        content="How many papers are in this project?",
+    ))
+
+    assert provider.calls == 0
+    assert response.assistant_message.content == "当前项目尚未添加可检索的研究资源，请先上传研究论文。"
+    assert response.analysis_patch is None
+
+
 def add_analysis(
     db: Session,
     *,

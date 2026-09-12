@@ -123,7 +123,17 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         return "spark"
 
     async def analyze_research(self, request: ResearchAnalysisRequest) -> ResearchAnalysisResponse:
-        result = await self._from_messages(build_research_analysis_messages(request), ResearchAnalysisResult)
+        result = await self._from_messages(
+            build_research_analysis_messages(request),
+            ResearchAnalysisResult,
+            max_tokens=settings.spark_research_analysis_max_tokens,
+            model_id=settings.spark_research_analysis_model_id,
+            performance_context={
+                "project_id": request.project_id,
+                "resource_id": request.resource_id,
+                "analysis_batch": "FULL",
+            },
+        )
         # Evidence readiness is a deterministic service concern, never an LLM decision.
         result = result.model_copy(update={"evidence_ready": False})
         source_text = request.analysis_evidence or request.extracted_text or ""
@@ -138,7 +148,17 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         self, request: ResearchAnalysisSupplementRequest
     ) -> ResearchAnalysisSupplementResponse:
         result = await self._from_messages(
-            build_research_analysis_supplement_messages(request), ResearchAnalysisPatch
+            build_research_analysis_supplement_messages(request),
+            ResearchAnalysisPatch,
+            max_tokens=settings.spark_research_analysis_max_tokens,
+            model_id=settings.spark_research_analysis_model_id,
+            performance_context={
+                "project_id": request.project_id,
+                "resource_id": request.resource_id,
+                "analysis_batch": request.analysis_batch or "+".join(request.missing_fields),
+                "retrieved_chunks": request.retrieved_chunks,
+                "context_chars": request.context_chars,
+            },
         )
         return ResearchAnalysisSupplementResponse(
             provider=self.provider_name,
@@ -264,6 +284,9 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         self, messages: list[dict[str, str]], result_type: type[ModelT],
         contract_validator: Callable[[ModelT], object] | None = None,
         resource_type: ResourceType | None = None,
+        max_tokens: int | None = None,
+        model_id: str | None = None,
+        performance_context: dict[str, object] | None = None,
     ) -> ModelT:
         try:
             if resource_type:
@@ -271,21 +294,33 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                     messages, resource_type=resource_type, repair_triggered=False
                 )
             else:
-                payload = await self._client.chat_json(messages, repair=False)
+                payload = await self._client.chat_json(
+                    messages,
+                    repair=False,
+                    max_tokens=max_tokens,
+                    model_id=model_id,
+                    performance_context=performance_context,
+                )
         except SparkResponseParseError as exc:
             logger.warning("Structured model output failed stage=json_parse exception_type=%s; attempting one repair", type(exc).__name__)
             return await self._repair_and_validate(
                 messages, result_type, contract_validator, validation_error=str(exc),
-                resource_type=resource_type,
+                resource_type=resource_type, max_tokens=max_tokens, model_id=model_id,
+                performance_context=performance_context,
             )
         return await self._validate_or_repair(
-            messages, payload, result_type, contract_validator, resource_type=resource_type
+            messages, payload, result_type, contract_validator, resource_type=resource_type,
+            max_tokens=max_tokens, model_id=model_id,
+            performance_context=performance_context,
         )
 
     async def _validate_or_repair(
         self, messages: list[dict[str, str]], payload: dict[str, Any], result_type: type[ModelT],
         contract_validator: Callable[[ModelT], object] | None,
         *, resource_type: ResourceType | None = None,
+        max_tokens: int | None = None,
+        model_id: str | None = None,
+        performance_context: dict[str, object] | None = None,
     ) -> ModelT:
         if result_type is TeachingResourceGenerationResult:
             normalized = normalize_resource_payload(payload)
@@ -315,6 +350,9 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                 invalid_payload=payload,
                 validation_error=self._brief_validation_error(exc),
                 resource_type=resource_type,
+                max_tokens=max_tokens,
+                model_id=model_id,
+                performance_context=performance_context,
             )
 
     async def _repair_and_validate(
@@ -324,6 +362,9 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         invalid_payload: dict[str, Any] | None = None,
         validation_error: str | None = None,
         resource_type: ResourceType | None = None,
+        max_tokens: int | None = None,
+        model_id: str | None = None,
+        performance_context: dict[str, object] | None = None,
     ) -> ModelT:
         repair_request: dict[str, Any] = {
             "task": "Repair the previous invalid output once. Return only one JSON object satisfying the contract.",
@@ -366,7 +407,13 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                 repair_messages, resource_type=resource_type, repair_triggered=True
             )
         else:
-            repaired = await self._client.chat_json(repair_messages, repair=False)
+            repaired = await self._client.chat_json(
+                repair_messages,
+                repair=False,
+                max_tokens=max_tokens,
+                model_id=model_id,
+                performance_context={**(performance_context or {}), "repair_triggered": True},
+            )
         if result_type is TeachingResourceGenerationResult:
             repaired = normalize_resource_payload(repaired)
             if resource_type == ResourceType.ASSESSMENT and isinstance(repaired.get("content"), dict):
