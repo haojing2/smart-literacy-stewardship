@@ -22,6 +22,7 @@ from app.schemas.research_assistant import (
     ResearchChatSessionResponse,
 )
 from app.services.research_analysis_service import (
+    EvidenceCardGenerationNotReadyError,
     ResearchAnalysisNotFoundError,
     ResearchAnalysisNotReadyError,
     ResearchAnalysisService,
@@ -326,3 +327,27 @@ def confirm_research_analysis(
             detail={"code": 40904, "message": str(exc)},
         ) from None
     return _analysis_response(result)
+
+
+@router.post("/api/v1/research-chat/sessions/{session_id}/evidence-card")
+def generate_evidence_card(
+    session_id: int,
+    current_user: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        result = ResearchAnalysisService(db).generate_evidence_card(
+            current_user_id=current_user.id,
+            session_id=session_id,
+        )
+    except ResearchAnalysisNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": 40405, "message": "Research analysis was not found"},
+        ) from None
+    except EvidenceCardGenerationNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": 40906, "message": str(exc)},
+        ) from None
+    return success_response(result.model_dump(by_alias=True, mode="json"))

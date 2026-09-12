@@ -27,18 +27,25 @@ describe('researchMockService', () => {
     expect(first.readiness).toEqual(second.readiness)
   })
 
-  it('persists a draft and confirmed evidence workflow', async () => {
+  it('generates a draft only after the teacher requests it', async () => {
     const snapshot = await readyWorkspace()
     if (!snapshot.analysis) throw new Error('Expected an analysis for a resource session')
     const complete: ResearchAnalysis = {
       ...snapshot.analysis,
       participants: ['五年级学生'],
+      researchTopics: ['信息核验学习'],
+      aiLiteracyDimensions: ['Design Thinking'],
       teachingStrategies: ['来源对照'],
+      assessmentTools: ['课堂观察'],
       mainFindings: ['信息核验表现提升'],
     }
     const updated = await researchMockService.updateAnalysis(42, complete)
     expect(updated.readiness.readinessStatus).toBe('READY')
-    expect(updated.evidenceDraftGenerated).toBe(true)
+    expect(updated.evidenceDraftGenerated).toBe(false)
+    expect((await researchMockService.getWorkspace(42))?.evidenceDraft).toBeNull()
+
+    const draft = await researchMockService.generateEvidenceCard(42)
+    expect(draft.status).toBe('DRAFT')
 
     const confirmed = await researchMockService.confirmEvidenceCard(42)
     expect(confirmed.status).toBe('CONFIRMED')

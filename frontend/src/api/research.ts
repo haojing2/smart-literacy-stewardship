@@ -180,6 +180,9 @@ export const confirmResearchAnalysis = (sessionId: number) =>
     `/research-chat/sessions/${sessionId}/analysis/confirm`,
   )
 
+export const generateEvidenceCard = (sessionId: number) =>
+  http.post<ApiEnvelope<BackendEvidenceCard>>(`/research-chat/sessions/${sessionId}/evidence-card`)
+
 export const getEvidenceCard = (evidenceCardId: number) =>
   http.get<ApiEnvelope<BackendEvidenceCard>>(`/evidence-cards/${evidenceCardId}`)
 

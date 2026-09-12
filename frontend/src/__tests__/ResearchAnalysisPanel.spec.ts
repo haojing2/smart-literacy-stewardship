@@ -38,6 +38,8 @@ describe('ResearchAnalysisPanel status and scope', () => {
     expect(wrapper.text()).toContain('研究解析待探索 · 可通过下方研究探索逐步完善')
     expect(wrapper.text()).not.toContain('重新分析')
     expect(wrapper.text()).toContain('0/9')
+    expect(wrapper.findAllComponents({ name: 'AnalysisFieldItem' })).toHaveLength(9)
+    expect(wrapper.findAllComponents({ name: 'AnalysisFieldItem' })[0]?.props('value')).toBe('')
   })
 
   it('uses the exact same nine-field configuration for display and editing', () => {

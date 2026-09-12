@@ -54,6 +54,7 @@ class EvidenceCardDraftService:
         current_user_id: int,
         analysis_id: int,
         session_id: int | None = None,
+        require_readiness: bool = True,
     ) -> EvidenceCardDraft:
         chat_repository = ResearchChatRepository(self.db)
         session = None
@@ -113,15 +114,16 @@ class EvidenceCardDraftService:
             analysis_record.structured_data_json
         )
         source = self._source(resource, analysis_record.project_id)
-        try:
-            EvidenceReadinessService.require_ready(
-                analysis,
-                self._source_metadata(resource),
-                expected_resource_id=resource.id if resource else None,
-            )
-        except Exception:
-            self.db.rollback()
-            raise
+        if require_readiness:
+            try:
+                EvidenceReadinessService.require_ready(
+                    analysis,
+                    self._source_metadata(resource),
+                    expected_resource_id=resource.id if resource else None,
+                )
+            except Exception:
+                self.db.rollback()
+                raise
         mapped = self.map_draft(
             analysis_record=analysis_record,
             analysis=analysis,
@@ -182,6 +184,7 @@ class EvidenceCardDraftService:
         current_user_id: int,
         session_id: int,
         analysis_id: int,
+        require_readiness: bool = True,
     ) -> EvidenceDraftSyncResult:
         """Synchronize the session's synthesized card with its latest analysis.
 
@@ -238,7 +241,7 @@ class EvidenceCardDraftService:
             self._source_metadata(resource),
             expected_resource_id=resource.id if resource else None,
         )
-        if readiness.readiness_status != "READY":
+        if require_readiness and readiness.readiness_status != "READY":
             if session.evidence_card_id is not None:
                 chat_repository.clear_evidence_card(session)
             self.db.commit()
@@ -279,6 +282,7 @@ class EvidenceCardDraftService:
             current_user_id=current_user_id,
             analysis_id=analysis.id,
             session_id=session.id,
+            require_readiness=require_readiness,
         )
         current_card = self.repository.get_owned_card(
             evidence_card_id=draft.evidence_card_id,

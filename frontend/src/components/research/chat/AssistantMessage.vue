@@ -14,7 +14,6 @@ defineEmits<{ viewSource: [] }>()
       <span v-if="typing" class="typing-cursor" aria-label="正在输入" />
       <div class="assistant-actions">
         <el-button link @click="$emit('viewSource')">查看依据</el-button>
-        <el-button link :disabled="!evidenceReady" title="达到 READY 后自动生成证据卡">加入证据卡</el-button>
       </div>
     </div>
   </article>

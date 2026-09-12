@@ -7,6 +7,7 @@ import {
   confirmResearchAnalysis as confirmResearchAnalysisApi,
   createResearchSession as createResearchSessionApi,
   extractResearchText as extractResearchTextApi,
+  generateEvidenceCard as generateEvidenceCardApi,
   getEvidenceCard as getEvidenceCardApi,
   getResearchSession as getResearchSessionApi,
   getLatestProjectResearchSession as getLatestProjectResearchSessionApi,
@@ -538,26 +539,25 @@ export const useResearchStore = defineStore('research', () => {
       processingStage = 'text-extraction'
       uploadStatus.value = 'TEXT_EXTRACTING'
       uploaded.processingStatus = 'TEXT_EXTRACTING'
-      addSystemMessage('正在解析研究资源……')
+      addSystemMessage('正在提取论文文本…')
       const extracted = useMock
         ? await researchMockService.extractText(project.projectId, uploaded.resourceId)
         : await extractTextWithRecovery(project.projectId, uploaded)
       Object.assign(uploaded, extracted)
       uploadStatus.value = 'TEXT_EXTRACTED'
-      addSystemMessage('研究资源解析完成')
+      addSystemMessage('文本提取已完成')
 
       if (!useMock) {
         processingStage = 'indexing'
         if (uploaded.indexStatus !== 'ready') {
           uploadStatus.value = 'INDEXING'
           uploaded.indexStatus = 'indexing'
-          addSystemMessage('正在建立研究知识索引…')
+          addSystemMessage('正在进行论文向量化与建立检索索引…')
           Object.assign(uploaded, await waitForIndexReady(project.projectId, uploaded.resourceId))
-          addSystemMessage('研究知识索引完成')
+          addSystemMessage('论文向量化与检索已完成')
         }
       }
       processingStage = 'session-initialization'
-      addSystemMessage('研究文档知识库已就绪，正在准备研究对话…')
       cacheActiveWorkspace()
       if (useMock) {
         const snapshot = await researchMockService.createSession(
@@ -582,8 +582,8 @@ export const useResearchStore = defineStore('research', () => {
           scope: 'RESOURCE', resourceId: uploaded.resourceId,
         }))
         localStorage.setItem(resourcesStorageKey(project.projectId), JSON.stringify(resources.value))
-        addSystemMessage('研究解析待探索 · 可通过下方研究探索逐步完善')
       }
+      addSystemMessage('论文知识库已就绪，可通过下方研究探索逐步完善研究解析')
       const completedResource = resources.value.find((item) => item.resourceId === uploaded.resourceId)
       if (completedResource) {
         completedResource.processingStatus = 'TEXT_EXTRACTED'
@@ -671,7 +671,7 @@ export const useResearchStore = defineStore('research', () => {
     error.value = ''
     if (!sessionOnly) resource.processingStatus = 'TEXT_EXTRACTING'
     let processingStage: 'text-extraction' | 'indexing' | 'session-initialization' = sessionOnly ? 'session-initialization' : 'text-extraction'
-    addSystemMessage(sessionOnly ? '正在准备研究对话……' : '正在重新解析研究资源……')
+    addSystemMessage(sessionOnly ? '正在准备研究对话…' : '正在重新提取论文文本…')
     try {
       if (sessionOnly) {
         if (useMock) {
@@ -690,7 +690,7 @@ export const useResearchStore = defineStore('research', () => {
             scope: 'RESOURCE', resourceId,
           }))
         }
-        addSystemMessage('研究解析待探索 · 可通过下方研究探索逐步完善')
+        addSystemMessage('论文知识库已就绪，可通过下方研究探索逐步完善研究解析')
         return
       }
       const extracted = useMock
@@ -698,6 +698,7 @@ export const useResearchStore = defineStore('research', () => {
         : await extractTextWithRecovery(project.projectId, resource)
       Object.assign(resource, extracted)
       resource.processingStatus = 'TEXT_EXTRACTED'
+      addSystemMessage('文本提取已完成')
       if (useMock) {
         processingStage = 'session-initialization'
         const snapshot = await researchMockService.createSession(project.projectId, resourceId, project.topic)
@@ -706,7 +707,9 @@ export const useResearchStore = defineStore('research', () => {
         processingStage = 'indexing'
         if (resource.indexStatus !== 'ready') {
           resource.indexStatus = 'indexing'
+          addSystemMessage('正在进行论文向量化与建立检索索引…')
           Object.assign(resource, await waitForIndexReady(project.projectId, resourceId))
+          addSystemMessage('论文向量化与检索已完成')
         }
         processingStage = 'session-initialization'
         const payload = await createResourceSessionWithRecovery(project.projectId, resourceId)
@@ -721,7 +724,7 @@ export const useResearchStore = defineStore('research', () => {
           scope: 'RESOURCE', resourceId,
         }))
       }
-      addSystemMessage('研究文档知识库已就绪，可通过研究探索逐步完善解析')
+      addSystemMessage('论文知识库已就绪，可通过下方研究探索逐步完善研究解析')
     } catch (requestError) {
       const currentResource = resources.value.find((item) => item.resourceId === resourceId) ?? resource
       if (requestError instanceof IndexingTimeoutError) {
@@ -825,11 +828,7 @@ export const useResearchStore = defineStore('research', () => {
         analysisGenerationStatus.value = normalized.updatedAnalysis.generationStatus ?? 'READY'
       }
       if (normalized.readiness) setReadiness(normalized.readiness)
-      if (normalized.evidenceDraftGenerated) {
-        addSystemMessage('当前核心研究信息已完整，系统已生成证据卡草稿。', 'EVIDENCE_DRAFT')
-      }
       if (normalized.evidenceCardId) {
-        isGeneratingEvidence.value = normalized.evidenceDraftGenerated
         evidenceDraft.value = useMock
           ? await researchMockService.getEvidenceCard(project.projectId)
           : await loadEvidenceDraft(normalized.evidenceCardId)
@@ -855,16 +854,14 @@ export const useResearchStore = defineStore('research', () => {
     if (!project || !session || isUpdatingAnalysis.value) return false
     isUpdatingAnalysis.value = true
     error.value = ''
+    const hadEvidenceDraft = Boolean(evidenceDraft.value)
     try {
       if (useMock) {
         const result = await researchMockService.updateAnalysis(project.projectId, updated)
         analysis.value = result.analysis
         analysisGenerationStatus.value = 'READY'
         setReadiness(result.readiness)
-        if (result.evidenceDraftGenerated) {
-          evidenceDraft.value = result.evidenceDraft
-          addSystemMessage('当前核心研究信息已完整，系统已生成证据卡草稿。', 'EVIDENCE_DRAFT')
-        }
+        evidenceDraft.value = null
       } else {
         const response = await updateResearchAnalysisApi(session.sessionId, updated)
         const data = response.data.data
@@ -877,12 +874,14 @@ export const useResearchStore = defineStore('research', () => {
         }
         analysisGenerationStatus.value = data.generationStatus
         setReadiness(response.data.data.readiness)
-        evidenceDraft.value = await loadEvidenceDraft(response.data.data.evidenceCardId)
-        if (response.data.data.evidenceDraftGenerated) {
-          addSystemMessage('当前核心研究信息已经完整，系统已生成证据卡草稿。', 'EVIDENCE_DRAFT')
-        }
+        evidenceDraft.value = null
       }
-      addSystemMessage('研究解析已更新', 'ANALYSIS_UPDATE')
+      addSystemMessage(
+        hadEvidenceDraft
+          ? '研究解析已更新，请重新生成当前版本证据卡。'
+          : '研究解析已更新',
+        'ANALYSIS_UPDATE',
+      )
       return true
     } catch (requestError) {
       error.value = messageFromError(requestError, '研究解析保存失败')
@@ -918,6 +917,36 @@ export const useResearchStore = defineStore('research', () => {
     } catch (requestError) {
       error.value = messageFromError(requestError, '研究解析确认失败')
       return false
+    }
+  }
+
+  async function generateEvidenceCard() {
+    const project = currentProject.value
+    const session = activeSession.value
+    if (!project || !session || !analysis.value || isGeneratingEvidence.value) return false
+    const recognizedCount = [
+      analysis.value.researchTopics, analysis.value.participants, analysis.value.aiLiteracyDimensions,
+      analysis.value.teachingStrategies, analysis.value.intervention, analysis.value.assessmentTools,
+      analysis.value.mainFindings, analysis.value.limitations, analysis.value.teachingImplications,
+    ].filter((value) => Array.isArray(value) ? value.length > 0 : Boolean(value?.trim())).length
+    if (recognizedCount < 6) {
+      error.value = '至少完成6项研究解析后才能生成证据卡。'
+      return false
+    }
+    isGeneratingEvidence.value = true
+    error.value = ''
+    try {
+      evidenceDraft.value = useMock
+        ? await researchMockService.generateEvidenceCard(project.projectId)
+        : backendEvidence((await generateEvidenceCardApi(session.sessionId)).data.data)
+      addSystemMessage('证据卡草稿已生成', 'EVIDENCE_DRAFT')
+      cacheActiveWorkspace()
+      return true
+    } catch (requestError) {
+      error.value = messageFromError(requestError, '证据卡生成失败')
+      return false
+    } finally {
+      isGeneratingEvidence.value = false
     }
   }
 
@@ -1021,6 +1050,7 @@ export const useResearchStore = defineStore('research', () => {
     sendMessage,
     updateAnalysis,
     confirmAnalysis,
+    generateEvidenceCard,
     updateEvidence,
     confirmEvidence,
     removeSelectedResource,

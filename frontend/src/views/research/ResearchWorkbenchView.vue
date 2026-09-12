@@ -73,6 +73,11 @@ async function confirmAnalysis() {
   else ElMessage.error(store.error || '研究解析确认失败')
 }
 
+async function generateEvidence() {
+  if (await store.generateEvidenceCard()) ElMessage.success('证据卡草稿已生成')
+  else ElMessage.warning(store.error || '证据卡生成失败')
+}
+
 async function saveEvidence(value: EvidenceCardEditableFields) {
   if (await store.updateEvidence(value)) ElMessage.success('证据卡草稿已保存')
   else ElMessage.error(store.error || '证据卡保存失败')
@@ -125,7 +130,7 @@ onMounted(() => void initialize())
       <ResearchContextHeader :project="currentProject" :resource-count="resourceCount" :evidence-count="evidenceCount" :continuing="isCompletingResearch" :mock-mode="researchMockMode" @view-resources="viewResources" @continue-course-design="continueCourseDesign" />
       <section class="research-workspace">
         <ResearchChatPanel :resources="resources" :selected-resources="selectedResourceItems" :active-scope-label="activeScopeLabel" :messages="messages" :analysis="analysis" :sending="isSending" :processing="processing" :evidence-ready="readinessStatus === 'READY'" :has-active-session="hasActiveSession" :initialization-failed="sessionInitializationFailed" :send-message="sendMessage" @upload="upload" @retry-message="retryMessage" @retry-resource="store.retryResource" @remove-resource="store.removeSelectedResource" @retry-initialize="initialize" />
-        <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" :analysis-generation-status="analysisGenerationStatus" :analysis-scope="activeAnalysisScope" :analysis-source="activeAnalysisSource" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" />
+        <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" :analysis-generation-status="analysisGenerationStatus" :analysis-scope="activeAnalysisScope" :analysis-source="activeAnalysisSource" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @generate-evidence="generateEvidence" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" />
       </section>
     </template>
   </main>

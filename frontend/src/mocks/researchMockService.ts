@@ -235,11 +235,17 @@ export const researchMockService = {
     const resource = state.resources.find((item) => item.resourceId === resourceId)
     if (!resource) throw new Error('研究资源不存在')
     resource.processingStatus = 'TEXT_EXTRACTING'
-    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '正在解析研究资源……'))
+    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '正在提取论文文本…'))
     save(projectId, state)
     await wait(520)
     resource.processingStatus = 'TEXT_EXTRACTED'
-    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '研究资源解析完成'))
+    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '文本提取已完成'))
+    resource.indexStatus = 'indexing'
+    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '正在进行论文向量化与建立检索索引…'))
+    save(projectId, state)
+    await wait(320)
+    resource.indexStatus = 'ready'
+    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '论文向量化与检索已完成'))
     save(projectId, state)
     return resource
   },
@@ -256,7 +262,6 @@ export const researchMockService = {
     // A resource analysis is auxiliary; it must not replace the project-level
     // knowledge-base conversation session.
     ensureProjectSession(state, projectId)
-    resource.processingStatus = 'ANALYZED'
     const timestamp = now()
     const resourceSession: ResearchChatSession = {
       sessionId: nextId(state),
@@ -282,7 +287,6 @@ export const researchMockService = {
       version: 1,
     }
     state.readiness = calculateReadiness(state.analysis)
-    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '研究解析待探索 · 可通过下方研究探索逐步完善'))
     save(projectId, state)
     return {
       session: resourceSession,
@@ -313,7 +317,6 @@ export const researchMockService = {
       }
     }
     if (!state.analysis) throw new Error('研究资源解析尚未完成')
-    const previousStatus = state.readiness.readinessStatus
     const userMessage = createMessage(state, 'USER', 'TEXT', content)
     state.analysis = applyExplicitFacts(state.analysis, content)
     state.readiness = calculateReadiness(state.analysis)
@@ -324,23 +327,14 @@ export const researchMockService = {
       stableAssistantReply(state.analysis),
     )
     state.messages.push(userMessage, assistantMessage)
-    let evidenceDraftGenerated = false
-    if (previousStatus !== 'READY' && state.readiness.readinessStatus === 'READY' && !state.evidenceDraft) {
-      const resource = state.resources[state.resources.length - 1]
-      if (resource) {
-        state.evidenceDraft = makeDraft(projectId, resource, state.analysis, nextId(state))
-        evidenceDraftGenerated = true
-        state.messages.push(createMessage(state, 'SYSTEM', 'EVIDENCE_DRAFT', '当前核心研究信息已完整，系统已生成证据卡草稿。'))
-      }
-    }
     save(projectId, state)
     return {
       userMessage,
       assistantMessage,
       updatedAnalysis: state.analysis,
       readiness: state.readiness,
-      evidenceDraftGenerated,
-      evidenceCardId: state.evidenceDraft?.evidenceCardId ?? null,
+      evidenceDraftGenerated: false,
+      evidenceCardId: null,
     }
   },
 
@@ -348,7 +342,6 @@ export const researchMockService = {
     await wait()
     const state = load(projectId)
     if (!state.session) throw new Error('研究对话不存在')
-    const previousStatus = state.readiness.readinessStatus
     state.analysis = {
       ...analysis,
       fieldSources: Object.fromEntries(
@@ -358,18 +351,10 @@ export const researchMockService = {
       version: (analysis.version ?? 1) + 1,
     }
     state.readiness = calculateReadiness(state.analysis)
-    let evidenceDraftGenerated = false
-    if (previousStatus !== 'READY' && state.readiness.readinessStatus === 'READY' && !state.evidenceDraft) {
-      const resource = state.resources[state.resources.length - 1]
-      if (resource) {
-        state.evidenceDraft = makeDraft(projectId, resource, state.analysis, nextId(state))
-        evidenceDraftGenerated = true
-        state.messages.push(createMessage(state, 'SYSTEM', 'EVIDENCE_DRAFT', '当前核心研究信息已完整，系统已生成证据卡草稿。'))
-      }
-    }
+    state.evidenceDraft = null
     state.messages.push(createMessage(state, 'SYSTEM', 'ANALYSIS_UPDATE', '研究解析已更新'))
     save(projectId, state)
-    return { analysis: state.analysis, readiness: state.readiness, evidenceDraftGenerated, evidenceDraft: state.evidenceDraft }
+    return { analysis: state.analysis, readiness: state.readiness, evidenceDraftGenerated: false, evidenceDraft: null }
   },
 
   async confirmAnalysis(projectId: number) {
@@ -386,6 +371,22 @@ export const researchMockService = {
   async getEvidenceCard(projectId: number) {
     await wait(120)
     return load(projectId).evidenceDraft
+  },
+
+  async generateEvidenceCard(projectId: number) {
+    await wait()
+    const state = load(projectId)
+    if (!state.analysis) throw new Error('研究解析尚未准备好')
+    const recognizedCount = Object.values(state.analysis).slice(0, 9)
+      .filter((value) => Array.isArray(value) ? value.length > 0 : Boolean(value?.trim())).length
+    if (recognizedCount < 6) throw new Error('至少完成6项研究解析后才能生成证据卡。')
+    if (!state.evidenceDraft) {
+      const resource = state.resources[state.resources.length - 1]
+      if (!resource) throw new Error('研究资源不存在')
+      state.evidenceDraft = makeDraft(projectId, resource, state.analysis, nextId(state))
+      save(projectId, state)
+    }
+    return state.evidenceDraft
   },
 
   async updateEvidenceCard(projectId: number, payload: EvidenceCardEditableFields) {

@@ -9,21 +9,36 @@ const sizeLabel = computed(() => {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`
 })
 const typeLabel = computed(() => (props.resource.fileName.toLowerCase().endsWith('.docx') ? 'DOCX' : 'PDF'))
-const stateLabel = computed(() => ({
-  UPLOADING: '正在上传…', UPLOADED: '上传完成', TEXT_EXTRACTING: '正在解析研究内容…', TEXT_EXTRACTED: '文本解析完成', INDEXING: '正在建立研究知识索引…', ANALYZING: '正在形成研究解析…', ANALYZED: '研究解析完成', REVIEWED: '已完成教师确认', CARD_READY: '证据卡已就绪', FAILED: '解析失败',
-}[props.resource.processingStatus]))
+const hasProcessingError = computed(() =>
+  props.resource.processingStatus === 'FAILED' || props.resource.indexStatus === 'error',
+)
+const stateLabel = computed(() => {
+  const { processingStatus, indexStatus } = props.resource
+  if (processingStatus === 'UPLOADING') return '正在上传…'
+  if (processingStatus === 'TEXT_EXTRACTING') return '正在提取论文文本…'
+  if (processingStatus === 'TEXT_EXTRACTED') {
+    if (indexStatus === 'error') return '文本提取已完成 · 向量化与检索索引失败'
+    if (indexStatus === 'ready') return '文本提取已完成 · 论文向量化与检索已完成'
+    return '文本提取已完成 · 正在向量化与建立检索索引…'
+  }
+  if (processingStatus === 'UPLOADED') return '上传完成，等待文本提取'
+  if (processingStatus === 'FAILED') return '处理失败'
+  if (processingStatus === 'REVIEWED') return '已完成教师确认'
+  if (processingStatus === 'CARD_READY') return '证据卡已就绪'
+  return '研究资源处理中'
+})
 </script>
 
 <template>
-  <article class="file-card" :class="{ failed: resource.processingStatus === 'FAILED' }">
+  <article class="file-card" :class="{ failed: hasProcessingError }">
     <div class="file-symbol">PDF</div>
     <div class="file-info">
       <strong>{{ resource.fileName }}</strong>
       <span>{{ typeLabel }} · {{ sizeLabel }}</span>
-      <small>{{ resource.processingStatus === 'FAILED' ? '!' : '✓' }} {{ stateLabel }}</small>
+      <small>{{ hasProcessingError ? '!' : '✓' }} {{ stateLabel }}</small>
       <p v-if="resource.errorMessage">{{ resource.errorMessage }}</p>
     </div>
-    <el-button v-if="resource.processingStatus === 'FAILED'" link type="danger" @click="$emit('retry', resource.resourceId)">重新解析</el-button>
+    <el-button v-if="hasProcessingError" link type="danger" @click="$emit('retry', resource.resourceId)">重新处理</el-button>
   </article>
 </template>
 

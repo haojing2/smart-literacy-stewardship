@@ -18,13 +18,18 @@ const props = defineProps<{
   analysisScope: 'PROJECT' | 'RESOURCE'
   analysisSource: string
 }>()
-defineEmits<{
+const emit = defineEmits<{
   saveAnalysis: [analysis: ResearchAnalysis]
   confirmAnalysis: []
+  generateEvidence: []
   saveEvidence: [payload: EvidenceCardEditableFields]
   confirmEvidence: []
 }>()
 const activeTab = ref('analysis')
+function generateEvidence() {
+  if (props.evidence) activeTab.value = 'evidence'
+  else emit('generateEvidence')
+}
 watch(() => props.evidence, (evidence, previous) => {
   if (evidence && !previous) activeTab.value = 'evidence'
   if (!evidence && activeTab.value !== 'evidence') activeTab.value = 'analysis'
@@ -35,14 +40,14 @@ watch(() => props.evidence, (evidence, previous) => {
   <aside class="evidence-workspace">
     <el-tabs v-model="activeTab" class="workspace-tabs">
       <el-tab-pane label="研究解析" name="analysis">
-        <ResearchAnalysisPanel :analysis="analysis" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving="savingAnalysis" :generation-status="analysisGenerationStatus" :scope="analysisScope" :source-label="analysisSource" @save="$emit('saveAnalysis', $event)" @confirm="$emit('confirmAnalysis')" />
+        <ResearchAnalysisPanel :analysis="analysis" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving="savingAnalysis" :generating-evidence="generatingEvidence" :evidence-generated="Boolean(evidence)" :generation-status="analysisGenerationStatus" :scope="analysisScope" :source-label="analysisSource" @save="$emit('saveAnalysis', $event)" @confirm="$emit('confirmAnalysis')" @generate-evidence="generateEvidence" />
       </el-tab-pane>
       <el-tab-pane name="evidence">
         <template #label><span class="evidence-tab-label">证据卡<i v-if="evidence && evidence.status === 'DRAFT'"></i></span></template>
         <div v-if="generatingEvidence" class="evidence-loading"><p>正在生成证据卡草稿……</p><el-skeleton :rows="7" animated /></div>
         <EvidenceCardPanel v-else-if="evidence" :evidence="evidence" :saving="savingEvidence" :confirming="confirmingEvidence" @save="$emit('saveEvidence', $event)" @confirm="$emit('confirmEvidence')" />
         <div v-else class="evidence-empty">
-          <div>▤</div><h3>还未生成证据卡</h3><p>随着研究信息逐步完整，系统会自动形成证据卡草稿。</p><span>当前信息完整度 {{ readinessScore }}%</span>
+          <div>▤</div><h3>还未生成证据卡</h3><p>完成至少 6 项研究解析后，可由教师主动生成证据卡。</p>
         </div>
       </el-tab-pane>
     </el-tabs>
