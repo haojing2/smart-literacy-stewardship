@@ -98,6 +98,8 @@ export const getProjectResearchResources = (projectId: number) =>
 export const extractResearchText = (resourceId: number) =>
   http.post<ApiEnvelope<{ resourceId: number; processingStatus: string; extractedText: string }>>(
     `/research-resources/${resourceId}/extract-text`,
+    undefined,
+    { timeout: 120_000 },
   )
 
 export const analyzeResearch = (resourceId: number) =>

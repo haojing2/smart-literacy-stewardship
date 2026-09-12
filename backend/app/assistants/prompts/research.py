@@ -46,6 +46,13 @@ def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str,
             '"evidenceInterpretations":[]}. The message value must answer the user naturally '
             "and directly. Populate analysisPatch or evidenceInterpretations only when they "
             "are reliably supported by evidence; otherwise keep them null and []. Return "
+            "analysisPatch as an object whose camelCase fields follow the declared patch "
+            "contract; analysisPatch.researchSubjects must be an array of strings, never an "
+            "array of objects. Every evidenceInterpretations item may contain only chunkId, "
+            "evidenceMeaning, relationToQuestion, and synthesis. Do not include claim, type, "
+            "evidenceId, sourceExcerpt, or transferBoundary. Each chunkId must exactly match "
+            "a real chunk_id shown in RETRIEVED PROJECT EVIDENCE. "
+            "Do not invent, transform, or summarize chunk ids. Return "
             "only the JSON object. Never output JSON Schema, $defs, properties, type, "
             "required, ResearchAnalysisPatch, ResearchChatResult, or model_json_schema. "
             "Do not add explanations or Markdown fences before or after the JSON."

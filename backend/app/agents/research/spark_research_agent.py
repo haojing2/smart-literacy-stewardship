@@ -21,7 +21,9 @@ from app.assistants.prompts.research import (
     build_research_conversation_summary_messages,
 )
 from app.schemas.research_assistant import (
+    EvidenceCardInterpretation,
     ResearchAnalysisRequest,
+    ResearchAnalysisPatch,
     ResearchAnalysisResponse,
     ResearchAnalysisResult,
     ResearchChatRequest,
@@ -73,15 +75,78 @@ class SparkResearchAgent(ResearchAgentProvider):
         messages = self._assistant_messages(build_research_chat_messages(request))
         self._log_final_messages(request, messages)
         content = await self._client.generate(messages)
+        message: str | None = None
+        analysis_patch: ResearchAnalysisPatch | None = None
+        interpretations: list[EvidenceCardInterpretation] = []
+        message_parse_status = "FALLBACK"
+        analysis_patch_validation_status = "NOT_PROVIDED"
+        interpretation_invalid_count = 0
         try:
             payload = SparkResearchAgentClient.extract_json_object(content)
-            result = ResearchChatResult.model_validate(payload, extra="forbid")
-        except (ResearchAgentParseError, ValidationError):
-            result = ResearchChatResult(
-                message=self._safe_chat_fallback(content),
-                analysis_patch=None,
-                evidence_interpretations=[],
+            raw_message = payload.get("message")
+            if isinstance(raw_message, str) and raw_message.strip():
+                message = raw_message.strip()
+                message_parse_status = "READY"
+
+            raw_patch = payload.get("analysisPatch", payload.get("analysis_patch"))
+            if raw_patch is not None:
+                try:
+                    analysis_patch = ResearchAnalysisPatch.model_validate(
+                        raw_patch, extra="forbid"
+                    )
+                    analysis_patch_validation_status = "READY"
+                except ValidationError as exc:
+                    analysis_patch_validation_status = "INVALID"
+                    logger.warning(
+                        "Research chat analysis patch rejected "
+                        "analysis_patch_validation_status=INVALID validation_errors=%s",
+                        self._validation_errors(exc),
+                    )
+
+            raw_interpretations = payload.get(
+                "evidenceInterpretations", payload.get("evidence_interpretations", [])
             )
+            if isinstance(raw_interpretations, list):
+                for item in raw_interpretations:
+                    try:
+                        interpretations.append(
+                            EvidenceCardInterpretation.model_validate(item, extra="forbid")
+                        )
+                    except (ValidationError, TypeError) as exc:
+                        interpretation_invalid_count += 1
+                        logger.warning(
+                            "Research chat evidence interpretation rejected "
+                            "evidence_interpretation_validation_status=INVALID "
+                            "error_type=%s",
+                            type(exc).__name__,
+                        )
+            elif raw_interpretations is not None:
+                interpretation_invalid_count = 1
+                logger.warning(
+                    "Research chat evidence interpretations rejected "
+                    "evidence_interpretation_validation_status=INVALID error_type=%s",
+                    type(raw_interpretations).__name__,
+                )
+        except ResearchAgentParseError:
+            pass
+
+        if message is None:
+            message = self._safe_chat_fallback(content)
+        result = ResearchChatResult(
+            message=message,
+            analysis_patch=analysis_patch,
+            evidence_interpretations=interpretations,
+        )
+        logger.info(
+            "Research chat response parsed chat_message_parse_status=%s "
+            "analysis_patch_validation_status=%s "
+            "evidence_interpretation_valid_count=%s "
+            "evidence_interpretation_invalid_count=%s",
+            message_parse_status,
+            analysis_patch_validation_status,
+            len(interpretations),
+            interpretation_invalid_count,
+        )
         return ResearchChatResponse(
             provider=self.provider_name,
             request_fingerprint=self._fingerprint(request),
@@ -91,6 +156,9 @@ class SparkResearchAgent(ResearchAgentProvider):
     @staticmethod
     def _safe_chat_fallback(content: str) -> str:
         """Keep useful plain text while preventing internal schema leakage."""
+        stripped = content.strip()
+        if stripped.startswith("{") or stripped.startswith("```json"):
+            return "抱歉，当前回答格式异常，请稍后重试。"
         schema_markers = (
             '"$defs"', "$defs", "additionalProperties", "ResearchAnalysisPatch",
             "ResearchChatResult", "model_json_schema",
@@ -99,7 +167,7 @@ class SparkResearchAgent(ResearchAgentProvider):
             content.find(marker) for marker in schema_markers if content.find(marker) >= 0
         ]
         if not marker_positions:
-            return content.strip()
+            return stripped
 
         prefix = content[:min(marker_positions)]
         cut_at = max(prefix.rfind("```"), prefix.rfind("{"))

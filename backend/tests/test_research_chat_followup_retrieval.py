@@ -119,11 +119,33 @@ def test_query_rewrite_prompt_uses_memory_and_resource_name_without_answering() 
     ))
 
     assert rewritten == REWRITTEN
+    assert client.messages is not None
     prompt = client.messages[-1]["content"]
     assert "用户正在讨论智能化学习支架" in prompt
     assert QUESTION_1 in prompt
     assert FOLLOW_UP in prompt
     assert "learning-scaffold.pdf" in prompt
+
+
+def test_query_rewrite_uses_larger_completion_budget() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        async def chat(self, _messages, **kwargs):
+            self.kwargs = kwargs
+            return "standalone query"
+
+    client = Client()
+    asyncio.run(ResearchQueryRewriteService(client).rewrite(
+        conversation_summary=None,
+        recent_messages=[],
+        current_question="它有哪些局限？",
+        project_title=None,
+        project_topic=None,
+    ))
+
+    assert client.kwargs["max_tokens"] == 512
     assert "Do not answer the question" in prompt
 
 

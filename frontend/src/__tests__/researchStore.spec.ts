@@ -302,6 +302,38 @@ describe('research store message preconditions', () => {
     expect(store.activeAnalysisScope).toBe('RESOURCE')
   })
 
+  it('recovers from an extraction timeout using the backend resource status', async () => {
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    const uploaded = {
+      resourceId: 96, fileName: 'large.pdf', mimeType: 'application/pdf', fileSize: 10,
+      processingStatus: 'UPLOADED', indexStatus: 'pending',
+    }
+    const ready = { ...uploaded, processingStatus: 'TEXT_EXTRACTED', indexStatus: 'ready' }
+    mocks.uploadResearchResource.mockResolvedValue({ data: { data: uploaded } })
+    mocks.extractResearchText.mockRejectedValue({
+      isAxiosError: true,
+      code: 'ECONNABORTED',
+      message: 'timeout of 120000ms exceeded',
+    })
+    mocks.getProjectResearchResources
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: { data: [ready] } })
+    mocks.createResearchSession.mockResolvedValue({ data: { data: {
+      ...projectSession, sessionId: 97, resourceId: 96, messages: [],
+      analysisGenerationStatus: 'READY',
+    } } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+    await store.uploadAndProcess(new File(['pdf'], 'large.pdf', { type: 'application/pdf' }))
+
+    expect(store.resources.find(item => item.resourceId === 96)?.processingStatus).toBe('ANALYZED')
+    expect(store.resources.find(item => item.resourceId === 96)?.indexStatus).toBe('ready')
+    expect(store.uploadStatus).toBe('ANALYZED')
+    expect(store.error).toBe('')
+    expect(mocks.createResearchSession).toHaveBeenCalledWith(12, 96)
+  })
+
   it('stops before session creation when the uploaded resource index fails', async () => {
     mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
     const uploaded = {

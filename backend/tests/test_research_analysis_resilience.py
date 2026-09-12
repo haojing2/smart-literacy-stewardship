@@ -8,7 +8,11 @@ import pytest
 from app.agents.research.errors import ResearchAgentContractError
 from app.agents.research.spark_research_agent import SparkResearchAgent
 from app.core.config import settings
-from app.schemas.research_assistant import ResearchAnalysisRequest, ResearchAnalysisResult
+from app.schemas.research_assistant import (
+    ResearchAnalysisRequest,
+    ResearchAnalysisResult,
+    ResearchChatRequest,
+)
 from app.services.bm25_store_service import BM25StoreService
 from app.services.chunk_service import MarkdownChunk
 from app.services.hybrid_retrieval_service import HybridRetrievalService
@@ -45,6 +49,27 @@ def test_validation_error_produces_specific_repair_prompt_and_final_contract_err
     assert "participants" in repair
     assert "extra" in repair
     assert "resultSchema" in repair
+
+
+def test_chat_preserves_message_while_discarding_invalid_nested_fields() -> None:
+    content = (
+        '{"message":"Visible answer",'
+        '"analysisPatch":{"researchSubjects":[{"name":"student"}]},'
+        '"evidenceInterpretations":['
+        '{"chunkId":"chunk-valid","evidenceMeaning":"meaning",'
+        '"relationToQuestion":"relation","synthesis":"synthesis"},'
+        '{"chunkId":"chunk-invalid","claim":"forbidden"}]}'
+    )
+    response = asyncio.run(
+        SparkResearchAgent(client=FakeAgentClient([content])).chat(
+            ResearchChatRequest(resource_id=None, message="question")
+        )
+    )
+
+    assert response.data.message == "Visible answer"
+    assert response.data.analysis_patch is None
+    assert [item.chunk_id for item in response.data.evidence_interpretations] == ["chunk-valid"]
+    assert response.data.message != content
 
 
 class StubDb:

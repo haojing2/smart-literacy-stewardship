@@ -112,6 +112,13 @@ function messageFromError(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+function isRequestTimeout(error: unknown): boolean {
+  return isAxiosError(error)
+    && (error.code === 'ECONNABORTED'
+      || error.code === 'ETIMEDOUT'
+      || error.message.toLowerCase().includes('timeout'))
+}
+
 class IndexingTimeoutError extends Error {
   constructor() {
     super('文本解析已完成，知识索引仍在后台构建，请稍后刷新。')
@@ -306,6 +313,53 @@ export const useResearchStore = defineStore('research', () => {
     throw new IndexingTimeoutError()
   }
 
+  function updateResourceFromBackend(refreshed: ResearchResource): ResearchResource {
+    const localIndex = resources.value.findIndex((item) => item.resourceId === refreshed.resourceId)
+    const localResource = localIndex >= 0 ? resources.value[localIndex] : undefined
+    if (localResource) Object.assign(localResource, refreshed)
+    return localResource ?? refreshed
+  }
+
+  async function waitForTextExtraction(projectId: number, resourceId: number) {
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      try {
+        const latest = (await getProjectResearchResourcesApi(projectId)).data.data
+        const refreshed = latest.find((item) => item.resourceId === resourceId)
+        if (!refreshed) throw new Error('上传的研究资源已不存在')
+        const resource = updateResourceFromBackend(refreshed)
+        if (resource.processingStatus === 'FAILED') {
+          throw new Error(resource.errorMessage || '文本提取失败')
+        }
+        if (resource.indexStatus === 'error') {
+          throw new Error(resource.errorMessage || '论文知识索引构建失败')
+        }
+        if (resource.indexStatus === 'ready' || resource.processingStatus === 'TEXT_EXTRACTED') {
+          return resource
+        }
+      } catch (pollError) {
+        if (!isAxiosError(pollError)) throw pollError
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 900))
+    }
+    throw new IndexingTimeoutError()
+  }
+
+  async function extractTextWithRecovery(projectId: number, resource: ResearchResource) {
+    try {
+      const payload = (await extractResearchTextApi(resource.resourceId)).data.data
+      if (payload.processingStatus === 'FAILED') {
+        throw new Error('文本提取失败')
+      }
+      Object.assign(resource, payload)
+      return resource
+    } catch (requestError) {
+      if (!isRequestTimeout(requestError)) throw requestError
+      addSystemMessage('文本解析仍在后台处理中，正在确认处理状态……')
+      return waitForTextExtraction(projectId, resource.resourceId)
+    }
+  }
+
   async function loadEvidenceDraft(evidenceCardId: number | null | undefined): Promise<EvidenceCard | null> {
     if (!evidenceCardId) return null
     return backendEvidence((await getEvidenceCardApi(evidenceCardId)).data.data)
@@ -446,22 +500,20 @@ export const useResearchStore = defineStore('research', () => {
       addSystemMessage('正在解析研究资源……')
       const extracted = useMock
         ? await researchMockService.extractText(project.projectId, uploaded.resourceId)
-        : {
-            ...uploaded,
-            processingStatus: (await extractResearchTextApi(uploaded.resourceId)).data.data
-              .processingStatus as UploadStatus,
-          }
+        : await extractTextWithRecovery(project.projectId, uploaded)
       Object.assign(uploaded, extracted)
       uploadStatus.value = 'TEXT_EXTRACTED'
       addSystemMessage('研究资源解析完成')
 
       if (!useMock) {
         processingStage = 'indexing'
-        uploadStatus.value = 'INDEXING'
-        uploaded.indexStatus = 'indexing'
-        addSystemMessage('正在建立研究知识索引…')
-        Object.assign(uploaded, await waitForIndexReady(project.projectId, uploaded.resourceId))
-        addSystemMessage('研究知识索引完成')
+        if (uploaded.indexStatus !== 'ready') {
+          uploadStatus.value = 'INDEXING'
+          uploaded.indexStatus = 'indexing'
+          addSystemMessage('正在建立研究知识索引…')
+          Object.assign(uploaded, await waitForIndexReady(project.projectId, uploaded.resourceId))
+          addSystemMessage('研究知识索引完成')
+        }
       }
       isAnalyzing.value = true
       processingStage = 'ai-analysis'
@@ -498,6 +550,19 @@ export const useResearchStore = defineStore('research', () => {
       const resource = uploadedResource
         ? resources.value.find((item) => item.resourceId === uploadedResource?.resourceId) ?? uploadedResource
         : resources.value.find((item) => item.resourceId === placeholderId)
+      if (requestError instanceof IndexingTimeoutError) {
+        if (resource) {
+          resource.errorMessage = null
+          if (resource.processingStatus !== 'TEXT_EXTRACTING') {
+            resource.processingStatus = 'TEXT_EXTRACTED'
+            resource.indexStatus = resource.indexStatus === 'ready' ? 'ready' : 'indexing'
+          }
+        }
+        uploadStatus.value = resource?.processingStatus === 'TEXT_EXTRACTING' ? 'TEXT_EXTRACTING' : 'INDEXING'
+        error.value = ''
+        addSystemMessage(requestError.message)
+        return
+      }
       if (resource) {
         if (processingStage === 'indexing') {
           resource.processingStatus = 'TEXT_EXTRACTED'
@@ -542,11 +607,7 @@ export const useResearchStore = defineStore('research', () => {
     try {
       const extracted = useMock
         ? await researchMockService.extractText(project.projectId, resourceId)
-        : {
-            ...resource,
-            processingStatus: (await extractResearchTextApi(resourceId)).data.data
-              .processingStatus as UploadStatus,
-          }
+        : await extractTextWithRecovery(project.projectId, resource)
       Object.assign(resource, extracted)
       resource.processingStatus = 'TEXT_EXTRACTED'
       if (useMock) {
@@ -556,8 +617,10 @@ export const useResearchStore = defineStore('research', () => {
         applySnapshot(snapshot)
       } else {
         processingStage = 'indexing'
-        resource.indexStatus = 'indexing'
-        Object.assign(resource, await waitForIndexReady(project.projectId, resourceId))
+        if (resource.indexStatus !== 'ready') {
+          resource.indexStatus = 'indexing'
+          Object.assign(resource, await waitForIndexReady(project.projectId, resourceId))
+        }
         isAnalyzing.value = true
         processingStage = 'ai-analysis'
         const payload = (await createResearchSessionApi(project.projectId, resourceId)).data.data
@@ -575,6 +638,16 @@ export const useResearchStore = defineStore('research', () => {
       addSystemMessage('研究资源重新解析完成')
     } catch (requestError) {
       const currentResource = resources.value.find((item) => item.resourceId === resourceId) ?? resource
+      if (requestError instanceof IndexingTimeoutError) {
+        currentResource.errorMessage = null
+        if (currentResource.processingStatus !== 'TEXT_EXTRACTING') {
+          currentResource.processingStatus = 'TEXT_EXTRACTED'
+          currentResource.indexStatus = currentResource.indexStatus === 'ready' ? 'ready' : 'indexing'
+        }
+        error.value = ''
+        addSystemMessage(requestError.message)
+        return
+      }
       if (processingStage === 'indexing') {
         currentResource.processingStatus = 'TEXT_EXTRACTED'
         currentResource.indexStatus = requestError instanceof IndexingTimeoutError ? 'indexing' : 'error'
