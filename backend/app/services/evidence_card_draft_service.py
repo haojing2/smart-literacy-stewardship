@@ -160,38 +160,14 @@ class EvidenceCardDraftService:
             raise
         return self._response(card, resource, analysis_record.project_id)
 
-    def generate_draft_if_ready_transition(
+    def find_or_bind_existing_draft(
         self,
         *,
         current_user_id: int,
         session_id: int,
         analysis_id: int,
-        previous_readiness_status: str,
-    ) -> EvidenceCardDraft | None:
-        """Create and bind one draft only when this session becomes READY."""
-        if previous_readiness_status != "INCOMPLETE":
-            return None
-        synchronized = self.ensure_current_draft(
-            current_user_id=current_user_id,
-            session_id=session_id,
-            analysis_id=analysis_id,
-        )
-        return synchronized.draft if synchronized.created else None
-
-    def ensure_current_draft(
-        self,
-        *,
-        current_user_id: int,
-        session_id: int,
-        analysis_id: int,
-        require_readiness: bool = True,
     ) -> EvidenceDraftSyncResult:
-        """Synchronize the session's synthesized card with its latest analysis.
-
-        Historical cards are immutable. A READY analysis reuses or creates its
-        own analysis-level card; an INCOMPLETE analysis clears only the session
-        binding. Retrieval chunk cards are deliberately ignored here.
-        """
+        """Find and bind a card for the latest analysis without creating one."""
         chat_repository = ResearchChatRepository(self.db)
         session = chat_repository.get_owned_session(
             session_id=session_id,
@@ -236,29 +212,6 @@ class EvidenceCardDraftService:
             if previous_card_id is not None
             else None
         )
-        readiness = EvidenceReadinessService.evaluate(
-            ResearchAnalysisResult.model_validate(analysis.structured_data_json),
-            self._source_metadata(resource),
-            expected_resource_id=resource.id if resource else None,
-        )
-        if require_readiness and readiness.readiness_status != "READY":
-            if session.evidence_card_id is not None:
-                chat_repository.clear_evidence_card(session)
-            self.db.commit()
-            result = EvidenceDraftSyncResult(
-                draft=None,
-                created=False,
-                action="CLEAR_STALE",
-            )
-            self._log_sync(
-                session=session,
-                analysis=analysis,
-                previous_card=previous_card,
-                current_card=None,
-                action=result.action,
-            )
-            return result
-
         existing = self.repository.get_by_analysis_id(analysis_id=analysis.id)
         if existing is not None:
             action = "REUSE" if session.evidence_card_id == existing.id else "REBIND"
@@ -277,21 +230,58 @@ class EvidenceCardDraftService:
                 action=action,
             )
             return result
-
-        draft = self.generate_draft(
-            current_user_id=current_user_id,
-            analysis_id=analysis.id,
-            session_id=session.id,
-            require_readiness=require_readiness,
-        )
-        current_card = self.repository.get_owned_card(
-            evidence_card_id=draft.evidence_card_id,
-            user_id=current_user_id,
+        if session.evidence_card_id is not None:
+            chat_repository.clear_evidence_card(session)
+        self.db.commit()
+        result = EvidenceDraftSyncResult(
+            draft=None,
+            created=False,
+            action="CLEAR_STALE" if previous_card is not None else "NOOP",
         )
         self._log_sync(
             session=session,
             analysis=analysis,
             previous_card=previous_card,
+            current_card=None,
+            action=result.action,
+        )
+        return result
+
+    def generate_current_draft(
+        self,
+        *,
+        current_user_id: int,
+        session_id: int,
+        analysis_id: int,
+    ) -> EvidenceDraftSyncResult:
+        """Create a card only for an explicit teacher generation request."""
+        existing = self.find_or_bind_existing_draft(
+            current_user_id=current_user_id,
+            session_id=session_id,
+            analysis_id=analysis_id,
+        )
+        if existing.draft is not None:
+            return existing
+        draft = self.generate_draft(
+            current_user_id=current_user_id,
+            analysis_id=analysis_id,
+            session_id=session_id,
+            require_readiness=False,
+        )
+        current_card = self.repository.get_owned_card(
+            evidence_card_id=draft.evidence_card_id,
+            user_id=current_user_id,
+        )
+        session = ResearchChatRepository(self.db).get_owned_session(
+            session_id=session_id, user_id=current_user_id
+        )
+        analysis, _ = self.repository.get_owned_analysis(
+            analysis_id=analysis_id, user_id=current_user_id
+        )
+        self._log_sync(
+            session=session,
+            analysis=analysis,
+            previous_card=None,
             current_card=current_card,
             action="CREATE",
         )

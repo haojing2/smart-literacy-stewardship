@@ -169,7 +169,7 @@ def test_ready_to_ready_creates_current_card_and_keeps_stale_protection(
 ) -> None:
     project, resource, session, first_analysis = create_workspace(db, teacher)
     service = EvidenceCardDraftService(db)
-    first = service.ensure_current_draft(
+    first = service.generate_current_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=first_analysis.id,
@@ -181,7 +181,7 @@ def test_ready_to_ready_creates_current_card_and_keeps_stale_protection(
         version=2,
         analysis=ready_analysis(),
     )
-    second = service.ensure_current_draft(
+    second = service.generate_current_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=second_analysis.id,
@@ -212,10 +212,10 @@ def test_same_analysis_reuses_current_card_without_creating_another(
 ) -> None:
     _, _, session, analysis = create_workspace(db, teacher)
     service = EvidenceCardDraftService(db)
-    first = service.ensure_current_draft(
+    first = service.generate_current_draft(
         current_user_id=teacher.id, session_id=session.id, analysis_id=analysis.id
     )
-    repeated = service.ensure_current_draft(
+    repeated = service.generate_current_draft(
         current_user_id=teacher.id, session_id=session.id, analysis_id=analysis.id
     )
 
@@ -230,7 +230,7 @@ def test_agent_ready_patch_replaces_current_card_and_no_patch_reuses_it(
     db: Session, teacher: SysUser
 ) -> None:
     _, _, session, first_analysis = create_workspace(db, teacher)
-    first = EvidenceCardDraftService(db).ensure_current_draft(
+    first = EvidenceCardDraftService(db).generate_current_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=first_analysis.id,
@@ -298,27 +298,24 @@ def test_agent_ready_patch_replaces_current_card_and_no_patch_reuses_it(
     )
 
     assert first.draft is not None
-    assert patched.evidence_draft_generated is True
+    assert patched.evidence_draft_generated is False
     assert patched.field_sources["researchTopics"] == "AI_CHAT"
     assert patched.version == first_analysis.version + 1
-    assert patched.evidence_card_id is not None
-    assert patched.evidence_card_id != first.draft.evidence_card_id
-    current = db.get(EvidenceCard, patched.evidence_card_id)
-    assert current is not None and current.research_analysis_id != first_analysis.id
+    assert patched.evidence_card_id is None
     assert unchanged.evidence_draft_generated is False
-    assert unchanged.evidence_card_id == patched.evidence_card_id
+    assert unchanged.evidence_card_id is None
     assert db.scalar(
         select(func.count()).select_from(EvidenceCard).where(
             EvidenceCard.source_chunk_id.is_(None)
         )
-    ) == 2
+    ) == 1
 
 
 def test_teacher_update_creates_and_binds_latest_analysis_card(
     db: Session, teacher: SysUser
 ) -> None:
     _, _, session, first_analysis = create_workspace(db, teacher)
-    first = EvidenceCardDraftService(db).ensure_current_draft(
+    first = EvidenceCardDraftService(db).generate_current_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=first_analysis.id,
@@ -339,14 +336,11 @@ def test_teacher_update_creates_and_binds_latest_analysis_card(
     )
 
     assert response.version == 2
-    assert response.evidence_draft_generated is True
-    assert response.evidence_card_id is not None
+    assert response.evidence_draft_generated is False
+    assert response.evidence_card_id is None
     assert first.draft is not None
-    assert response.evidence_card_id != first.draft.evidence_card_id
-    current = db.get(EvidenceCard, response.evidence_card_id)
-    assert current is not None and current.research_analysis_id == response.analysis_id
     db.refresh(session)
-    assert session.evidence_card_id == current.id
+    assert session.evidence_card_id is None
 
 
 def test_incomplete_latest_analysis_clears_binding_without_deleting_history(
@@ -354,7 +348,7 @@ def test_incomplete_latest_analysis_clears_binding_without_deleting_history(
 ) -> None:
     project, resource, session, first_analysis = create_workspace(db, teacher)
     service = EvidenceCardDraftService(db)
-    first = service.ensure_current_draft(
+    first = service.generate_current_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=first_analysis.id,
@@ -367,7 +361,7 @@ def test_incomplete_latest_analysis_clears_binding_without_deleting_history(
         version=2,
         analysis=incomplete,
     )
-    result = service.ensure_current_draft(
+    result = service.find_or_bind_existing_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=second_analysis.id,
@@ -382,7 +376,7 @@ def test_incomplete_latest_analysis_clears_binding_without_deleting_history(
     assert db.get(EvidenceCard, first.draft.evidence_card_id) is not None
 
 
-def test_get_session_creates_and_binds_missing_card_for_ready_latest_analysis(
+def test_get_session_does_not_create_missing_card_for_ready_latest_analysis(
     db: Session, teacher: SysUser
 ) -> None:
     _, _, session, analysis = create_workspace(db, teacher)
@@ -392,19 +386,17 @@ def test_get_session_creates_and_binds_missing_card_for_ready_latest_analysis(
         session_id=session.id,
     )
 
-    assert response.evidence_card_id is not None
-    card = db.get(EvidenceCard, response.evidence_card_id)
-    assert card is not None
-    assert card.research_analysis_id == analysis.id
+    assert response.evidence_card_id is None
+    assert db.scalar(select(func.count()).select_from(EvidenceCard)) == 0
     db.refresh(session)
-    assert session.evidence_card_id == card.id
+    assert session.evidence_card_id is None
 
 
 def test_get_session_reuses_analysis_card_when_binding_is_stale(
     db: Session, teacher: SysUser
 ) -> None:
     _, _, session, analysis = create_workspace(db, teacher)
-    synchronized = EvidenceCardDraftService(db).ensure_current_draft(
+    synchronized = EvidenceCardDraftService(db).generate_current_draft(
         current_user_id=teacher.id,
         session_id=session.id,
         analysis_id=analysis.id,
@@ -484,7 +476,6 @@ def test_retrieval_card_never_becomes_synthesized_response_card(
     retrieval_card = db.scalar(
         select(EvidenceCard).where(EvidenceCard.source_chunk_id == source.chunk_id)
     )
-    assert retrieval_card is not None
+    assert retrieval_card is None
     db.refresh(session)
     assert session.evidence_card_id is None
-    assert analysis.id == retrieval_card.research_analysis_id

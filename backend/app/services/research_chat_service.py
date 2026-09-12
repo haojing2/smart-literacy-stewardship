@@ -235,6 +235,11 @@ class ResearchChatService:
             source_metadata = EvidenceReadinessService.source_metadata_from_knowledge_base()
             analysis_record = self._ensure_project_analysis(session)
             analysis = self._validated_analysis(analysis_record, source_metadata)
+            self._restore_latest_analysis_card(
+                current_user_id=current_user_id,
+                session=session,
+                analysis_record=analysis_record,
+            )
             return self._session_response(
                 session, analysis, source_metadata,
                 generation_status=analysis_record.generation_status,
@@ -247,6 +252,11 @@ class ResearchChatService:
         )
         analysis_record = self._require_latest_analysis(session.resource_id)
         analysis = self._validated_analysis(analysis_record, source_metadata)
+        self._restore_latest_analysis_card(
+            current_user_id=current_user_id,
+            session=session,
+            analysis_record=analysis_record,
+        )
         return self._session_response(
             session, analysis, source_metadata,
             generation_status=analysis_record.generation_status,
@@ -286,6 +296,19 @@ class ResearchChatService:
         if session is None:
             raise ResearchChatNotFoundError("Research resource session was not found")
         return self.get_session(current_user_id=current_user_id, session_id=session.id)
+
+    def _restore_latest_analysis_card(
+        self,
+        *,
+        current_user_id: int,
+        session: ResearchChatSession,
+        analysis_record: ResearchAnalysis,
+    ) -> None:
+        EvidenceCardDraftService(self.db).find_or_bind_existing_draft(
+            current_user_id=current_user_id,
+            session_id=session.id,
+            analysis_id=analysis_record.id,
+        )
 
     async def send_message(
         self,
@@ -425,13 +448,6 @@ class ResearchChatService:
         if patch is not None:
             self.repository.clear_evidence_card(session)
             self.db.commit()
-
-        retrieval_drafts = EvidenceCardDraftService(self.db).generate_retrieval_drafts(
-            analysis=latest_analysis_record,
-            assistant_message_id=assistant_message.id,
-            sources=chat_request.project_knowledge_sources,
-            interpretations=interpretations,
-        )
 
         return ResearchChatSendMessageResponse(
             session_id=session_id,
@@ -694,12 +710,6 @@ class ResearchChatService:
         if patch is not None:
             self.repository.clear_evidence_card(session)
             self.db.commit()
-        retrieval_drafts = EvidenceCardDraftService(self.db).generate_retrieval_drafts(
-            analysis=latest_analysis_record,
-            assistant_message_id=assistant_message.id,
-            sources=chat_request.project_knowledge_sources,
-            interpretations=interpretations,
-        )
         return ResearchChatSendMessageResponse(
             session_id=session.id,
             user_message=self._message_response(user_message),

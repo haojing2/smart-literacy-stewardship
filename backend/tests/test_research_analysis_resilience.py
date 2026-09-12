@@ -214,11 +214,7 @@ def test_failed_analysis_retry_does_not_create_another_failed_version() -> None:
     assert repository.analysis_data is None
 
 
-def test_failed_analysis_retry_success_creates_next_ready_version(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.services.research_chat_service.EvidenceCardDraftService.generate_draft_if_ready_transition",
-        lambda *args, **kwargs: None,
-    )
+def test_failed_analysis_retry_success_creates_next_ready_version() -> None:
     existing = SimpleNamespace(
         id=40, version=1, generation_status="FAILED",
         structured_data_json=ResearchAnalysisResult().model_dump(),

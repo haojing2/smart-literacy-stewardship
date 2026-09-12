@@ -123,11 +123,10 @@ class ResearchAnalysisService:
             raise EvidenceCardGenerationNotReadyError(
                 "至少完成6项研究解析后才能生成证据卡。"
             )
-        return EvidenceCardDraftService(self.db).ensure_current_draft(
+        return EvidenceCardDraftService(self.db).generate_current_draft(
             current_user_id=current_user_id,
             session_id=session_id,
             analysis_id=analysis.id,
-            require_readiness=False,
         ).draft
 
     def confirm_analysis(
