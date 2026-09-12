@@ -21,6 +21,22 @@ describe('ResearchChatPanel', () => {
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
+  it('has nine matching scaffolds and sends the selected target field', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(true)
+    const wrapper = mount(ResearchChatPanel, { props: { ...baseProps, hasActiveSession: true, sendMessage } })
+    const chips = wrapper.findAll('.scaffold-chip')
+    expect(chips).toHaveLength(9)
+    const implication = chips.find((chip) => chip.text().includes('教学启示'))!
+    await implication.trigger('click')
+    expect(wrapper.get<HTMLTextAreaElement>('textarea').element.value).toBe('这项研究对当前课程设计有哪些明确的教学启示？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(sendMessage).toHaveBeenCalledWith(
+      '这项研究对当前课程设计有哪些明确的教学启示？',
+      'teachingImplications',
+    )
+  })
+
   it('marks completed analysis dimensions in the scaffold', () => {
     const wrapper = mount(ResearchChatPanel, { props: { ...baseProps, hasActiveSession: true, sendMessage: vi.fn(), analysis: { participants: ['五年级'], researchTopics: [], aiLiteracyDimensions: [], teachingStrategies: [], intervention: null, assessmentTools: [], mainFindings: [], limitations: [], teachingImplications: null, teacherConfirmed: false, fieldSources: {} } } })
     expect(wrapper.get('[aria-label="研究探索脚手架"]').text()).toContain('✓')

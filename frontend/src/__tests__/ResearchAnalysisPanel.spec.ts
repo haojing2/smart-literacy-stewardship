@@ -18,7 +18,7 @@ const emptyAnalysis = {
 
 
 describe('ResearchAnalysisPanel status and scope', () => {
-  it('shows a failed generation as a retryable technical failure, not normal readiness', async () => {
+  it('shows the progressive exploration state instead of a retry flow', () => {
     const wrapper = shallowMount(ResearchAnalysisPanel, {
       props: {
         analysis: emptyAnalysis,
@@ -35,18 +35,16 @@ describe('ResearchAnalysisPanel status and scope', () => {
 
     expect(wrapper.text()).toContain('单篇论文解析')
     expect(wrapper.text()).toContain('来源：《study.pdf》')
-    expect(wrapper.text()).toContain('论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析')
-    expect(wrapper.text()).toContain('重新分析')
-    expect(wrapper.text()).not.toContain('0/9')
-    await wrapper.get('button').trigger('click')
-    expect(wrapper.emitted('reanalyze')).toHaveLength(1)
+    expect(wrapper.text()).toContain('研究解析待探索 · 可通过下方研究探索逐步完善')
+    expect(wrapper.text()).not.toContain('重新分析')
+    expect(wrapper.text()).toContain('0/9')
   })
 
   it('uses the exact same nine-field configuration for display and editing', () => {
     expect(RESEARCH_ANALYSIS_FIELDS).toHaveLength(9)
     expect(RESEARCH_ANALYSIS_FIELDS.map(({ key, label }) => ({ key, label }))).toEqual([
-      { key: 'participants', label: '研究对象' },
       { key: 'researchTopics', label: '研究问题/主题' },
+      { key: 'participants', label: '研究对象' },
       { key: 'aiLiteracyDimensions', label: '能力重点' },
       { key: 'teachingStrategies', label: '教学策略' },
       { key: 'intervention', label: '干预周期/实施时长' },

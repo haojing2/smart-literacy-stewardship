@@ -237,8 +237,13 @@ def test_agent_ready_patch_replaces_current_card_and_no_patch_reuses_it(
     )
 
     class Knowledge:
-        async def search_resource(self, **_kwargs):
-            return []
+        async def search_resource(self, **kwargs):
+            return [ProjectKnowledgeSource(
+                content="The paper studies AI verification principles.",
+                project_id=kwargs["project_id"], filename="paper.pdf",
+                file_id=kwargs["file_id"], chunk_id="evidence-1",
+                chunk_index=0, score=0.9,
+            )]
 
     class Rewriter:
         async def rewrite(self, **_kwargs):
@@ -258,6 +263,14 @@ def test_agent_ready_patch_replaces_current_card_and_no_patch_reuses_it(
                         {"researchTopics": ["AI verification principles"]}
                         if self.calls == 1
                         else None
+                    ),
+                    evidenceInterpretations=(
+                        [EvidenceCardInterpretation(
+                            chunkId="evidence-1", evidenceMeaning="The paper states the topic.",
+                            relationToQuestion="Directly answers the question.",
+                            synthesis="AI verification is the research topic.",
+                        )]
+                        if self.calls == 1 else []
                     ),
                 ),
             )
@@ -286,6 +299,8 @@ def test_agent_ready_patch_replaces_current_card_and_no_patch_reuses_it(
 
     assert first.draft is not None
     assert patched.evidence_draft_generated is True
+    assert patched.field_sources["researchTopics"] == "AI_CHAT"
+    assert patched.version == first_analysis.version + 1
     assert patched.evidence_card_id is not None
     assert patched.evidence_card_id != first.draft.evidence_card_id
     current = db.get(EvidenceCard, patched.evidence_card_id)

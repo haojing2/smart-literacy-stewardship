@@ -115,9 +115,26 @@ class ResearchAnalysisStateService:
         return {field: "TEACHER" for field in EDITABLE_FIELD_SOURCES}
 
     @staticmethod
+    def confirmed_sources(
+        current: dict[str, str] | None,
+        analysis: ResearchAnalysisResult,
+    ) -> dict[str, str]:
+        sources = {
+            **ResearchAnalysisStateService.initial_mock_sources(),
+            **(current or {}),
+        }
+        for api_field, internal_field in EDITABLE_FIELD_SOURCES.items():
+            value = getattr(analysis, internal_field)
+            if (isinstance(value, list) and value) or (isinstance(value, str) and value.strip()):
+                sources[api_field] = "TEACHER"
+        return sources
+
+    @staticmethod
     def sources_after_patch(
         current: dict[str, str] | None,
         patch: ResearchAnalysisPatch,
+        *,
+        source: str = "AI_CHAT",
     ) -> dict[str, str]:
         sources = {
             **ResearchAnalysisStateService.initial_mock_sources(),
@@ -129,5 +146,5 @@ class ResearchAnalysisStateService:
         ).keys()
         for api_field, internal_field in EDITABLE_FIELD_SOURCES.items():
             if internal_field in changed_internal_fields:
-                sources[api_field] = "TEACHER"
+                sources[api_field] = source
         return sources

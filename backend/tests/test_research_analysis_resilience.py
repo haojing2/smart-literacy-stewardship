@@ -18,7 +18,10 @@ from app.services.chunk_service import MarkdownChunk
 from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.knowledge_base_path_service import KnowledgeBasePathService
 from app.services.project_knowledge_service import ProjectKnowledgeService, ProjectKnowledgeSource
-from app.services.research_analysis_evidence_service import RESEARCH_ANALYSIS_FIELD_QUERIES
+from app.services.research_analysis_evidence_service import (
+    RESEARCH_ANALYSIS_FIELD_QUERIES,
+    ResearchAnalysisEvidenceCollector,
+)
 from app.services.research_chat_service import (
     ResearchChatService,
     ResearchKnowledgeIndexNotReadyError,
@@ -86,12 +89,18 @@ class StubDb:
 
 
 class FailingProvider:
+    calls = 0
+
     async def analyze_research(self, request):
+        self.calls += 1
         raise ResearchAgentContractError("invalid contract")
 
 
 class SuccessfulProvider:
+    calls = 0
+
     async def analyze_research(self, request):
+        self.calls += 1
         return SimpleNamespace(
             provider="test",
             data=ResearchAnalysisResult(research_topics=["topic"]),
@@ -119,7 +128,11 @@ class SessionRepository:
     def create_analysis(self, **kwargs):
         self.analysis_data = kwargs["structured_data"]
         self.analysis_generation_status = kwargs.get("generation_status")
-        return SimpleNamespace(id=41)
+        return SimpleNamespace(
+            id=41,
+            version=kwargs["version"],
+            generation_status=kwargs.get("generation_status", "READY"),
+        )
 
     def create_session(self, **kwargs):
         return SimpleNamespace(id=51)
@@ -135,9 +148,10 @@ class OneSourceKnowledge:
         ]
 
 
-def test_structured_analysis_failure_still_creates_incomplete_session() -> None:
+def test_session_creation_creates_empty_analysis_without_calling_provider() -> None:
     db = StubDb()
-    service = ResearchChatService(db, FailingProvider(), OneSourceKnowledge())  # type: ignore[arg-type]
+    provider = FailingProvider()
+    service = ResearchChatService(db, provider, OneSourceKnowledge())  # type: ignore[arg-type]
     repository = SessionRepository()
     service.repository = repository  # type: ignore[assignment]
     service.get_session = lambda **kwargs: SimpleNamespace(session_id=51)  # type: ignore[method-assign]
@@ -150,18 +164,16 @@ def test_structured_analysis_failure_still_creates_incomplete_session() -> None:
     assert response.session_id == 51
     assert repository.analysis_data["evidence_ready"] is False
     assert repository.analysis_data["research_subjects"] == []
-    assert repository.analysis_generation_status == "FAILED"
+    assert repository.analysis_generation_status == "READY"
+    assert provider.calls == 0
     assert db.commits == 1
 
 
-def test_successful_structured_analysis_is_saved_ready(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.services.research_chat_service.EvidenceCardDraftService.generate_draft_if_ready_transition",
-        lambda *args, **kwargs: None,
-    )
+def test_session_creation_does_not_run_successful_batch_provider() -> None:
     db = StubDb()
     repository = SessionRepository()
-    service = ResearchChatService(db, SuccessfulProvider(), OneSourceKnowledge())  # type: ignore[arg-type]
+    provider = SuccessfulProvider()
+    service = ResearchChatService(db, provider, OneSourceKnowledge())  # type: ignore[arg-type]
     service.repository = repository  # type: ignore[assignment]
     service.get_session = lambda **kwargs: SimpleNamespace(session_id=51)  # type: ignore[method-assign]
     asyncio.run(service.create_session(
@@ -169,11 +181,15 @@ def test_successful_structured_analysis_is_saved_ready(monkeypatch) -> None:
         request=SimpleNamespace(resource_id=16, title=None),
     ))
     assert repository.analysis_generation_status == "READY"
-    assert repository.analysis_data["research_topics"] == ["topic"]
+    assert repository.analysis_data["research_topics"] == []
+    assert provider.calls == 0
 
 
 def test_failed_analysis_retry_does_not_create_another_failed_version() -> None:
-    existing = SimpleNamespace(id=40, version=1, generation_status="FAILED")
+    existing = SimpleNamespace(
+        id=40, version=1, generation_status="FAILED",
+        structured_data_json=ResearchAnalysisResult().model_dump(),
+    )
 
     class RetryRepository(SessionRepository):
         def __init__(self):
@@ -194,7 +210,7 @@ def test_failed_analysis_retry_does_not_create_another_failed_version() -> None:
         current_user_id=1, project_id=1020,
         request=SimpleNamespace(resource_id=16, title=None),
     ))
-    assert repository.marked_failed == 1
+    assert repository.marked_failed == 0
     assert repository.analysis_data is None
 
 
@@ -203,7 +219,10 @@ def test_failed_analysis_retry_success_creates_next_ready_version(monkeypatch) -
         "app.services.research_chat_service.EvidenceCardDraftService.generate_draft_if_ready_transition",
         lambda *args, **kwargs: None,
     )
-    existing = SimpleNamespace(id=40, version=1, generation_status="FAILED")
+    existing = SimpleNamespace(
+        id=40, version=1, generation_status="FAILED",
+        structured_data_json=ResearchAnalysisResult().model_dump(),
+    )
 
     class RetryRepository(SessionRepository):
         def __init__(self):
@@ -225,8 +244,8 @@ def test_failed_analysis_retry_success_creates_next_ready_version(monkeypatch) -
         current_user_id=1, project_id=1020,
         request=SimpleNamespace(resource_id=16, title=None),
     ))
-    assert repository.analysis_version == 2
-    assert repository.analysis_generation_status == "READY"
+    assert repository.analysis_version is None
+    assert repository.analysis_generation_status is None
 
 
 def test_resource_session_rejects_non_ready_index_before_analysis() -> None:
@@ -336,17 +355,18 @@ def test_bounded_evidence_respects_chunk_and_character_limits(monkeypatch) -> No
 
     monkeypatch.setattr(settings, "research_analysis_max_chunks", 4)
     monkeypatch.setattr(settings, "research_analysis_max_context_chars", 600)
-    service = ResearchChatService(None, SimpleNamespace(), ManySources())  # type: ignore[arg-type]
-    evidence, sources, retrieved_count = asyncio.run(
-        service._prepare_analysis_evidence(project_id=1020, file_id=16)
+    bundle = asyncio.run(
+        ResearchAnalysisEvidenceCollector(ManySources()).collect(  # type: ignore[arg-type]
+            project_id=1020, file_id=16, max_chunks=4, max_chars=600,
+        )
     )
     # Two or three query variants per field improve recall before local fusion.
-    assert retrieved_count == sum(
+    assert bundle.retrieved_count == sum(
         len(queries) for queries in RESEARCH_ANALYSIS_FIELD_QUERIES.values()
     ) * 5
-    assert len(sources) <= 4
-    assert len(evidence) <= 600
-    assert all(source.file_id == 16 for source in sources)
+    assert len(bundle.unique_sources) <= 4
+    assert bundle.context_chars <= 600
+    assert all(source.file_id == 16 for source in bundle.unique_sources)
 
 
 def test_search_resource_filters_before_top_k_with_two_files(tmp_path) -> None:

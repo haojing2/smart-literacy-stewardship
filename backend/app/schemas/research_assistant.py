@@ -9,6 +9,19 @@ from pydantic.alias_generators import to_camel
 from app.schemas.evidence import EvidenceReadinessResult
 
 
+ResearchAnalysisTargetField = Literal[
+    "participants",
+    "researchTopics",
+    "aiLiteracyDimensions",
+    "teachingStrategies",
+    "intervention",
+    "assessmentTools",
+    "mainFindings",
+    "limitations",
+    "teachingImplications",
+]
+
+
 class ResearchAssistantSchema(BaseModel):
     model_config = ConfigDict(
         alias_generator=to_camel,
@@ -118,6 +131,7 @@ class ResearchChatRequest(ResearchAssistantSchema):
     session_id: int | None = Field(default=None, gt=0)
     resource_id: int | None = Field(default=None, gt=0)
     message: str = Field(min_length=1)
+    analysis_target_field: ResearchAnalysisTargetField | None = None
     retrieval_query: str | None = None
     query_rewrite_status: Literal["READY", "FALLBACK", "FAILED"] = "FALLBACK"
     history: list[ResearchChatMessageInput] = Field(default_factory=list)
@@ -228,6 +242,7 @@ class ResearchChatSessionCreateRequest(ResearchAssistantSchema):
 
 class ResearchChatMessageCreateRequest(ResearchAssistantSchema):
     content: str = Field(min_length=1)
+    analysis_target_field: ResearchAnalysisTargetField | None = None
 
 
 class ResearchChatMessageResponse(ResearchAssistantSchema):
@@ -248,7 +263,7 @@ class ResearchChatSessionResponse(ResearchAssistantSchema):
     messages: list[ResearchChatMessageResponse] = Field(default_factory=list)
     latest_analysis: ResearchAnalysisResult | None = None
     analysis_generation_status: Literal["PENDING", "READY", "FAILED"] | None = None
-    field_sources: dict[str, Literal["MOCK", "TEACHER"]] = Field(default_factory=dict)
+    field_sources: dict[str, Literal["MOCK", "AI_CHAT", "TEACHER"]] = Field(default_factory=dict)
     teacher_confirmed: bool = False
     version: int | None = None
     readiness: ResearchAnalysisReadiness | None = None
@@ -263,6 +278,10 @@ class ResearchChatSendMessageResponse(ResearchAssistantSchema):
     assistant_message: ResearchChatMessageResponse
     analysis_patch: ResearchAnalysisPatch | None = None
     latest_analysis: ResearchAnalysisResult | None = None
+    analysis_generation_status: Literal["PENDING", "READY", "FAILED"] | None = None
+    field_sources: dict[str, Literal["MOCK", "AI_CHAT", "TEACHER"]] = Field(default_factory=dict)
+    teacher_confirmed: bool = False
+    version: int | None = None
     readiness: ResearchAnalysisReadiness | None = None
     evidence_draft_generated: bool = False
     evidence_card_id: int | None = None
@@ -326,7 +345,7 @@ class ResearchAnalysisVersionResponse(ResearchAssistantSchema):
     version: int
     generation_status: Literal["PENDING", "READY", "FAILED"] = "READY"
     latest_analysis: ResearchAnalysisEditableView
-    field_sources: dict[str, Literal["MOCK", "TEACHER"]]
+    field_sources: dict[str, Literal["MOCK", "AI_CHAT", "TEACHER"]]
     teacher_confirmed: bool
     teacher_confirmed_at: datetime | None = None
     readiness: ResearchAnalysisReadiness

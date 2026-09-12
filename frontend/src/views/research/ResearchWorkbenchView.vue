@@ -9,7 +9,7 @@ import ResearchContextHeader from '@/components/research/ResearchContextHeader.v
 import ResearchChatPanel from '@/components/research/chat/ResearchChatPanel.vue'
 import EvidenceWorkspace from '@/components/research/EvidenceWorkspace.vue'
 import { useResearchStore } from '@/stores/research'
-import type { EvidenceCardEditableFields, ResearchAnalysis, ResearchChatMessage } from '@/types/research'
+import type { EvidenceCardEditableFields, ResearchAnalysis, ResearchAnalysisContentKey, ResearchChatMessage } from '@/types/research'
 
 const route = useRoute()
 const router = useRouter()
@@ -57,8 +57,8 @@ function retryMessage(message: ResearchChatMessage) {
   void store.sendMessage(message.content, message.messageId)
 }
 
-async function sendMessage(content: string): Promise<boolean> {
-  const success = await store.sendMessage(content)
+async function sendMessage(content: string, analysisTargetField?: ResearchAnalysisContentKey): Promise<boolean> {
+  const success = await store.sendMessage(content, undefined, analysisTargetField)
   if (!success && store.error) ElMessage.warning(store.error)
   return success
 }
@@ -125,7 +125,7 @@ onMounted(() => void initialize())
       <ResearchContextHeader :project="currentProject" :resource-count="resourceCount" :evidence-count="evidenceCount" :continuing="isCompletingResearch" :mock-mode="researchMockMode" @view-resources="viewResources" @continue-course-design="continueCourseDesign" />
       <section class="research-workspace">
         <ResearchChatPanel :resources="resources" :selected-resources="selectedResourceItems" :active-scope-label="activeScopeLabel" :messages="messages" :analysis="analysis" :sending="isSending" :processing="processing" :evidence-ready="readinessStatus === 'READY'" :has-active-session="hasActiveSession" :initialization-failed="sessionInitializationFailed" :send-message="sendMessage" @upload="upload" @retry-message="retryMessage" @retry-resource="store.retryResource" @remove-resource="store.removeSelectedResource" @retry-initialize="initialize" />
-        <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" :analysis-generation-status="analysisGenerationStatus" :analysis-scope="activeAnalysisScope" :analysis-source="activeAnalysisSource" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" @reanalyze="activeSession?.resourceId && store.retryResource(activeSession.resourceId)" />
+        <EvidenceWorkspace :analysis="analysis" :evidence="evidenceDraft" :readiness-score="readinessScore" :readiness-status="readinessStatus" :missing-required-fields="missingRequiredFields" :saving-analysis="isUpdatingAnalysis" :generating-evidence="isGeneratingEvidence" :saving-evidence="isUpdatingEvidence" :confirming-evidence="isConfirmingEvidence" :analysis-generation-status="analysisGenerationStatus" :analysis-scope="activeAnalysisScope" :analysis-source="activeAnalysisSource" @save-analysis="saveAnalysis" @confirm-analysis="confirmAnalysis" @save-evidence="saveEvidence" @confirm-evidence="confirmEvidence" />
       </section>
     </template>
   </main>

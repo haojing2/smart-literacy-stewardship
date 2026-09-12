@@ -52,7 +52,7 @@ export interface ResearchAnalysis {
   mainFindings: string[]
   limitations: string[]
   teachingImplications: string | null
-  fieldSources?: Record<string, 'MOCK' | 'TEACHER'>
+  fieldSources?: Record<string, 'MOCK' | 'AI_CHAT' | 'TEACHER'>
   teacherConfirmed?: boolean
   version?: number
   generationStatus?: AnalysisGenerationStatus
@@ -77,8 +77,8 @@ export interface ResearchAnalysisFieldConfig {
 }
 
 export const RESEARCH_ANALYSIS_FIELDS: readonly ResearchAnalysisFieldConfig[] = [
-  { key: 'participants', label: '研究对象', editorType: 'textarea', isList: true },
   { key: 'researchTopics', label: '研究问题/主题', editorType: 'textarea', isList: true },
+  { key: 'participants', label: '研究对象', editorType: 'textarea', isList: true },
   { key: 'aiLiteracyDimensions', label: '能力重点', editorType: 'textarea', isList: true },
   { key: 'teachingStrategies', label: '教学策略', editorType: 'textarea', isList: true },
   { key: 'intervention', label: '干预周期/实施时长', editorType: 'textarea', isList: false },

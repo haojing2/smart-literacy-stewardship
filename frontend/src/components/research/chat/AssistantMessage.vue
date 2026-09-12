@@ -2,7 +2,7 @@
 import MarkdownContent from './MarkdownContent.vue'
 
 defineProps<{ content: string; evidenceReady: boolean; typing?: boolean }>()
-defineEmits<{ reanalyze: []; viewSource: [] }>()
+defineEmits<{ viewSource: [] }>()
 </script>
 
 <template>
@@ -15,7 +15,6 @@ defineEmits<{ reanalyze: []; viewSource: [] }>()
       <div class="assistant-actions">
         <el-button link @click="$emit('viewSource')">查看依据</el-button>
         <el-button link :disabled="!evidenceReady" title="达到 READY 后自动生成证据卡">加入证据卡</el-button>
-        <el-button link @click="$emit('reanalyze')">重新分析</el-button>
       </div>
     </div>
   </article>

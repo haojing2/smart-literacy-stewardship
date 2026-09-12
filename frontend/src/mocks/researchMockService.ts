@@ -269,8 +269,8 @@ export const researchMockService = {
     }
     state.analysis = {
       participants: [],
-      researchTopics: projectTopic ? [projectTopic] : [],
-      aiLiteracyDimensions: ['INFORMATION_VERIFICATION'],
+      researchTopics: [],
+      aiLiteracyDimensions: [],
       teachingStrategies: [],
       intervention: null,
       assessmentTools: [],
@@ -282,7 +282,7 @@ export const researchMockService = {
       version: 1,
     }
     state.readiness = calculateReadiness(state.analysis)
-    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '研究资源解析完成，可在右侧查看研究解析与证据卡。'))
+    state.messages.push(createMessage(state, 'SYSTEM', 'PROCESS', '研究解析待探索 · 可通过下方研究探索逐步完善'))
     save(projectId, state)
     return {
       session: resourceSession,

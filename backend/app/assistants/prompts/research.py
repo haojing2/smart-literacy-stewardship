@@ -79,6 +79,24 @@ def build_research_analysis_supplement_messages(
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
 def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str, str]]:
+    patch_fields = {
+        "participants": "researchSubjects",
+        "researchTopics": "researchTopics",
+        "aiLiteracyDimensions": "aiLiteracyDimensions",
+        "teachingStrategies": "teachingStrategies",
+        "intervention": "interventionDuration",
+        "assessmentTools": "assessmentTools",
+        "mainFindings": "mainFindings",
+        "limitations": "limitations",
+        "teachingImplications": "teachingImplications",
+    }
+    target_instruction = (
+        f" analysisTargetField is {request.analysis_target_field}. If analysisPatch is "
+        f"provided, it must contain exactly the {patch_fields[request.analysis_target_field]} "
+        "field and no others."
+        if request.analysis_target_field
+        else ""
+    )
     return _research_chat_context_messages(
         request,
         response_instruction=(
@@ -97,6 +115,7 @@ def build_research_chat_messages(request: ResearchChatRequest) -> list[dict[str,
             "only the JSON object. Never output JSON Schema, $defs, properties, type, "
             "required, ResearchAnalysisPatch, ResearchChatResult, or model_json_schema. "
             "Do not add explanations or Markdown fences before or after the JSON."
+            + target_instruction
         ),
     )
 

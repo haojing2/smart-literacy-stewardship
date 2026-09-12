@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.agents.research.base import ResearchAgentProvider
 from app.agents.research.errors import ResearchAgentError
 from app.assistants.base import ResearchAssistantProvider
-from app.assistants.spark_client import SparkLLMError
 from app.agents.research.context_builder import (
     ConversationContextBuilder,
     RECENT_MESSAGE_LIMIT,
@@ -29,25 +28,15 @@ from app.schemas.research_assistant import (
     ResearchConversationSummaryRequest,
 )
 from app.services.research_analysis_state_service import (
+    EDITABLE_FIELD_SOURCES,
     ResearchAnalysisStateService,
 )
 from app.services.evidence_readiness_service import EvidenceReadinessService
 from app.services.evidence_card_draft_service import EvidenceCardDraftService
-from app.services.embedding_service import EmbeddingError
-from app.services.bm25_store_service import BM25StoreError
-from app.services.hybrid_retrieval_service import HybridRetrievalError
 from app.services.project_knowledge_service import (
     ProjectKnowledgeService,
-    ProjectKnowledgeSource,
 )
 from app.services.research_query_rewrite_service import ResearchQueryRewriteService
-from app.services.research_analysis_evidence_service import (
-    ResearchAnalysisEvidenceCollector,
-)
-from app.services.research_analysis_extraction_service import (
-    ResearchAnalysisExtractionService,
-)
-from app.services.vector_store_service import VectorStoreError
 from app.core.config import settings
 
 
@@ -99,13 +88,9 @@ class ResearchChatService:
         self.repository = ResearchChatRepository(db)
         self.project_knowledge = project_knowledge or ProjectKnowledgeService(db)
         self.query_rewriter = query_rewriter or ResearchQueryRewriteService()
-        # Production composition injects the general structured LLM provider.
-        # Falling back preserves compatibility for direct/test construction.
-        self.analysis_provider = analysis_provider or provider  # type: ignore[assignment]
-        self.analysis_evidence = ResearchAnalysisEvidenceCollector(self.project_knowledge)
-        self.analysis_extraction = ResearchAnalysisExtractionService(
-            self.analysis_provider, self.analysis_evidence
-        )
+        # Kept in the constructor for compatibility with existing composition;
+        # session creation no longer invokes a batch analysis provider.
+        self.analysis_provider = analysis_provider
 
     async def create_session(
         self,
@@ -185,90 +170,25 @@ class ResearchChatService:
         )
 
         analysis_record = self.repository.get_latest_analysis(resource_id=resource.id)
-        should_generate = (
-            analysis_record is None
-            or getattr(analysis_record, "generation_status", "READY") == "FAILED"
-        )
-        analysis_failed = False
-        if should_generate:
-            analysis_stage = "evidence_retrieval"
-            try:
-                extraction = await self.analysis_extraction.extract(
-                    project_id=project_id,
-                    resource_id=resource.id,
-                    project_title=project.title if project else None,
-                    project_topic=project.topic if project else None,
-                )
-                logger.info(
-                    "Research analysis evidence prepared project_id=%s file_id=%s "
-                    "retrieved_chunks=%s chunks=%s context_chars=%s",
-                    project_id, resource.id, extraction.evidence.retrieved_count,
-                    len(extraction.evidence.unique_sources),
-                    extraction.evidence.context_chars,
-                )
-                analysis_stage = "contract_validation"
-                analysis = ResearchAnalysisStateService.with_readiness(
-                    extraction.analysis,
-                    source_metadata,
-                )
-                logger.info(
-                    "Research paper analysis completed project_id=%s file_id=%s provider=%s",
-                    project_id, resource.id, extraction.diagnostics.provider,
-                )
-            except (
-                EmbeddingError,
-                HybridRetrievalError,
-                VectorStoreError,
-                BM25StoreError,
-            ) as exc:
-                logger.exception(
-                    "Research analysis retrieval failed project_id=%s file_id=%s "
-                    "exception_type=%s stage=%s",
-                    project_id, resource.id, type(exc).__name__, analysis_stage,
-                )
-                raise
-            except Exception as exc:
-                # Structured-provider timeouts, invalid JSON and contract failures
-                # produce an explicit FAILED analysis instead of a misleading 0/8.
-                analysis_failed = True
-                analysis = ResearchAnalysisStateService.with_readiness(
-                    self._empty_project_analysis(), source_metadata
-                )
-                logger.warning(
-                    "Research paper structured analysis unavailable project_id=%s "
-                    "file_id=%s analysis_provider=%s analysis_generation_status=FAILED "
-                    "failure_stage=structured_extraction failure_type=%s",
-                    project_id,
-                    resource.id,
-                    getattr(self.analysis_provider, "provider_name", type(self.analysis_provider).__name__),
-                    type(exc).__name__,
-                    exc_info=isinstance(exc, (ResearchAgentError, SparkLLMError)),
-                )
-        else:
-            analysis = self._validated_analysis(
-                analysis_record,
-                source_metadata,
+        analysis = (
+            self._validated_analysis(analysis_record, source_metadata)
+            if analysis_record is not None
+            else ResearchAnalysisStateService.with_readiness(
+                self._empty_project_analysis(), source_metadata
             )
+        )
 
         title = (request.title or f"与 {resource.original_filename} 的研究对话")[:255]
         try:
-            if should_generate:
-                structured_data = analysis.model_dump(mode="json", by_alias=False)
-                if analysis_failed and analysis_record is not None:
-                    # Retrying an already failed generation must not grow an
-                    # unlimited chain of empty analysis versions.
-                    self.repository.mark_analysis_generation_failed(
-                        analysis_record, structured_data=structured_data
-                    )
-                else:
-                    analysis_record = self.repository.create_analysis(
-                        resource_id=resource.id,
-                        project_id=project_id,
-                        version=(analysis_record.version + 1 if analysis_record else 1),
-                        structured_data=structured_data,
-                        field_sources=ResearchAnalysisStateService.initial_mock_sources(),
-                        generation_status="FAILED" if analysis_failed else "READY",
-                    )
+            if analysis_record is None:
+                analysis_record = self.repository.create_analysis(
+                    resource_id=resource.id,
+                    project_id=project_id,
+                    version=1,
+                    structured_data=analysis.model_dump(mode="json", by_alias=False),
+                    field_sources=ResearchAnalysisStateService.initial_mock_sources(),
+                    generation_status="READY",
+                )
             session = self.repository.create_session(
                 user_id=current_user_id,
                 project_id=project_id,
@@ -280,34 +200,6 @@ class ResearchChatService:
         except Exception:
             self.db.rollback()
             raise
-        # A newly saved analysis is treated as a transition from an empty,
-        # incomplete state so a complete initial parse can produce its draft.
-        draft = None
-        if not analysis_failed:
-            draft = EvidenceCardDraftService(self.db).generate_draft_if_ready_transition(
-                current_user_id=current_user_id,
-                session_id=session_id,
-                analysis_id=analysis_record.id,
-                previous_readiness_status="INCOMPLETE",
-            )
-        if draft is not None:
-            session = self.repository.get_owned_session(
-                session_id=session_id, user_id=current_user_id, for_update=True
-            )
-            if session is not None:
-                self.repository.create_message(
-                    session_id=session.id,
-                    role="SYSTEM",
-                    sequence_no=self.repository.next_sequence_no(session_id=session.id),
-                    content="当前核心研究信息已经完整，系统已生成证据卡草稿。",
-                )
-                self.db.commit()
-        if analysis_failed:
-            logger.warning(
-                "Research chat session created with incomplete analysis project_id=%s "
-                "file_id=%s session_id=%s",
-                project_id, resource.id, session_id,
-            )
         readiness = EvidenceReadinessService.evaluate(
             analysis, source_metadata, expected_resource_id=resource.id
         )
@@ -319,24 +211,16 @@ class ResearchChatService:
             resource.id,
             resource.original_filename,
             session_id,
-            "FAILED" if analysis_failed else getattr(analysis_record, "generation_status", "READY"),
+            getattr(analysis_record, "generation_status", "READY"),
             readiness.readiness_score,
             readiness.readiness_status,
-            draft is not None,
-            getattr(draft, "evidence_card_id", None) if draft is not None else None,
+            False,
+            None,
         )
         return self.get_session(
             current_user_id=current_user_id,
             session_id=session_id,
         )
-
-    async def _prepare_analysis_evidence(
-        self, *, project_id: int, file_id: int
-    ) -> tuple[str, list[ProjectKnowledgeSource], int]:
-        bundle = await self.analysis_evidence.collect(
-            project_id=project_id, file_id=file_id
-        )
-        return bundle.prompt_context, bundle.unique_sources, bundle.retrieved_count
 
     def get_session(
         self, *, current_user_id: int, session_id: int
@@ -432,6 +316,7 @@ class ResearchChatService:
         current_user_id: int,
         session_id: int,
         content: str,
+        analysis_target_field: str | None = None,
     ) -> ResearchChatSendMessageResponse:
         session = self.repository.get_owned_session(
             session_id=session_id,
@@ -447,6 +332,7 @@ class ResearchChatService:
                 current_user_id=current_user_id,
                 session=session,
                 content=content,
+                analysis_target_field=analysis_target_field,
             )
 
         resource = self.repository.get_resource(resource_id=session.resource_id)
@@ -478,12 +364,19 @@ class ResearchChatService:
                 session=session,
                 content=content,
                 analysis=analysis,
+                analysis_target_field=analysis_target_field,
             )
             provider_response = await self.provider.chat(chat_request)
         except Exception as exc:
             self._record_user_message_failure(user_message, session=session, error=exc)
             raise
-        patch = provider_response.data.analysis_patch
+        interpretations = self._valid_evidence_interpretations(
+            chat_request, provider_response.data.evidence_interpretations
+        )
+        patch = self._validated_chat_patch(
+            chat_request, provider_response.data.analysis_patch, interpretations,
+            interpretation_count=len(provider_response.data.evidence_interpretations),
+        )
 
         session = self.repository.get_owned_session(
             session_id=session_id,
@@ -574,7 +467,7 @@ class ResearchChatService:
             analysis=latest_analysis_record,
             assistant_message_id=assistant_message.id,
             sources=chat_request.project_knowledge_sources,
-            interpretations=provider_response.data.evidence_interpretations,
+            interpretations=interpretations,
         )
 
         return ResearchChatSendMessageResponse(
@@ -583,6 +476,13 @@ class ResearchChatService:
             assistant_message=self._message_response(assistant_message),
             analysis_patch=patch,
             latest_analysis=latest_analysis,
+            analysis_generation_status=latest_analysis_record.generation_status,
+            field_sources={
+                **ResearchAnalysisStateService.initial_mock_sources(),
+                **(latest_analysis_record.field_sources_json or {}),
+            },
+            teacher_confirmed=latest_analysis_record.teacher_confirmed,
+            version=latest_analysis_record.version,
             readiness=ResearchAnalysisStateService.readiness(
                 latest_analysis,
                 source_metadata,
@@ -601,6 +501,7 @@ class ResearchChatService:
         current_user_id: int,
         session_id: int,
         content: str,
+        analysis_target_field: str | None = None,
     ) -> AsyncIterator[str]:
         """Persist the user message, stream content, then persist one full reply.
 
@@ -619,6 +520,7 @@ class ResearchChatService:
                 current_user_id=current_user_id,
                 session=session,
                 content=content,
+                analysis_target_field=analysis_target_field,
             ):
                 yield chunk
             return
@@ -651,6 +553,7 @@ class ResearchChatService:
                 session=session,
                 content=content,
                 analysis=analysis,
+                analysis_target_field=analysis_target_field,
             )
             async for chunk in self.provider.stream_chat(chat_request):
                 full_response.append(chunk)
@@ -692,6 +595,7 @@ class ResearchChatService:
         current_user_id: int,
         session: ResearchChatSession,
         content: str,
+        analysis_target_field: str | None = None,
     ) -> ResearchChatSendMessageResponse:
         """Persist a project knowledge-base turn and evolve its session analysis."""
         source_metadata = EvidenceReadinessService.source_metadata_from_knowledge_base()
@@ -753,6 +657,13 @@ class ResearchChatService:
                 assistant_message=self._message_response(assistant_message),
                 analysis_patch=None,
                 latest_analysis=current_analysis,
+                analysis_generation_status=current_analysis_record.generation_status,
+                field_sources={
+                    **ResearchAnalysisStateService.initial_mock_sources(),
+                    **(current_analysis_record.field_sources_json or {}),
+                },
+                teacher_confirmed=current_analysis_record.teacher_confirmed,
+                version=current_analysis_record.version,
                 readiness=ResearchAnalysisStateService.readiness(
                     current_analysis, source_metadata
                 ),
@@ -766,6 +677,7 @@ class ResearchChatService:
                 session=session,
                 content=content,
                 analysis=current_analysis,
+                analysis_target_field=analysis_target_field,
             )
             provider_response = await self.provider.chat(chat_request)
         except Exception as exc:
@@ -789,7 +701,13 @@ class ResearchChatService:
         )
         self._mark_user_message_completed(user_message, session=session)
         self.repository.touch_session(session)
-        patch = provider_response.data.analysis_patch
+        interpretations = self._valid_evidence_interpretations(
+            chat_request, provider_response.data.evidence_interpretations
+        )
+        patch = self._validated_chat_patch(
+            chat_request, provider_response.data.analysis_patch, interpretations,
+            interpretation_count=len(provider_response.data.evidence_interpretations),
+        )
         latest_analysis = ResearchAnalysisStateService.apply_patch(
             current_analysis, patch, source_metadata
         )
@@ -823,7 +741,7 @@ class ResearchChatService:
             analysis=latest_analysis_record,
             assistant_message_id=assistant_message.id,
             sources=chat_request.project_knowledge_sources,
-            interpretations=provider_response.data.evidence_interpretations,
+            interpretations=interpretations,
         )
         return ResearchChatSendMessageResponse(
             session_id=session.id,
@@ -831,6 +749,13 @@ class ResearchChatService:
             assistant_message=self._message_response(assistant_message),
             analysis_patch=patch,
             latest_analysis=latest_analysis,
+            analysis_generation_status=latest_analysis_record.generation_status,
+            field_sources={
+                **ResearchAnalysisStateService.initial_mock_sources(),
+                **(latest_analysis_record.field_sources_json or {}),
+            },
+            teacher_confirmed=latest_analysis_record.teacher_confirmed,
+            version=latest_analysis_record.version,
             readiness=ResearchAnalysisStateService.readiness(latest_analysis, source_metadata),
             evidence_draft_generated=synchronized.created,
             evidence_card_id=(
@@ -846,6 +771,7 @@ class ResearchChatService:
         current_user_id: int,
         session: ResearchChatSession,
         content: str,
+        analysis_target_field: str | None = None,
     ) -> AsyncIterator[str]:
         ready_resource_count = self._ready_project_resource_count(
             project_id=session.project_id, user_id=current_user_id
@@ -905,6 +831,7 @@ class ResearchChatService:
                 session=session,
                 content=content,
                 analysis=None,
+                analysis_target_field=analysis_target_field,
             )
             async for chunk in self.provider.stream_chat(chat_request):
                 full_response.append(chunk)
@@ -949,6 +876,7 @@ class ResearchChatService:
         session: ResearchChatSession,
         content: str,
         analysis: ResearchAnalysisResult | None,
+        analysis_target_field: str | None = None,
     ) -> ResearchChatRequest:
         project = self.repository.get_owned_project(
             project_id=session.project_id,
@@ -1070,6 +998,7 @@ class ResearchChatService:
             session_id=session.id,
             resource_id=session.resource_id,
             message=content,
+            analysis_target_field=analysis_target_field,
             retrieval_query=retrieval_query,
             query_rewrite_status=query_rewrite_status,
             history=recent_history,
@@ -1136,6 +1065,53 @@ class ResearchChatService:
             ],
         )
         return request
+
+    @staticmethod
+    def _valid_evidence_interpretations(request, interpretations):
+        retrieved_chunk_ids = {
+            source.chunk_id for source in request.project_knowledge_sources
+        }
+        valid = [
+            interpretation for interpretation in interpretations
+            if interpretation.chunk_id in retrieved_chunk_ids
+        ]
+        if len(valid) != len(interpretations):
+            logger.warning(
+                "Research chat evidence interpretations rejected: chunk outside current retrieval"
+            )
+        return valid
+
+    @staticmethod
+    def _validated_chat_patch(
+        request: ResearchChatRequest,
+        patch,
+        interpretations,
+        *,
+        interpretation_count: int,
+    ):
+        if patch is None:
+            return None
+        changed_fields = set(
+            patch.model_dump(exclude_none=True, by_alias=False).keys()
+        )
+        if not changed_fields:
+            return None
+        if request.retrieval_status != "READY" or not request.project_knowledge_sources:
+            logger.warning("Research chat analysis patch rejected: no current-turn RAG evidence")
+            return None
+        if len(interpretations) != interpretation_count:
+            logger.warning("Research chat analysis patch rejected: invalid evidence chunk reference")
+            return None
+        if request.analysis_target_field is not None:
+            expected = EDITABLE_FIELD_SOURCES[request.analysis_target_field]
+            if changed_fields != {expected}:
+                logger.warning(
+                    "Research chat analysis patch rejected: target=%s changed_fields=%s",
+                    request.analysis_target_field,
+                    sorted(changed_fields),
+                )
+                return None
+        return patch
 
     def _conversation_history(self, session_id: int) -> list[ResearchChatMessageInput]:
         return [

@@ -153,6 +153,9 @@ class ResearchAnalysisService:
         try:
             if not analysis_record.teacher_confirmed:
                 self.repository.confirm_analysis(analysis_record)
+            analysis_record.field_sources_json = ResearchAnalysisStateService.confirmed_sources(
+                analysis_record.field_sources_json, analysis
+            )
             if resource is not None:
                 self.repository.set_resource_processing_status(resource, processing_status="REVIEWED")
             self.db.commit()

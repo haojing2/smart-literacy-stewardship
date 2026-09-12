@@ -29,6 +29,7 @@ import type {
   EvidenceCardEditableFields,
   ReadinessStatus,
   ResearchAnalysis,
+  ResearchAnalysisContentKey,
   ResearchChatMessage,
   ResearchChatSession,
   ResearchProjectContext,
@@ -136,7 +137,7 @@ class IndexingTimeoutError extends Error {
 
 class AnalysisStillProcessingError extends Error {
   constructor() {
-    super('研究解析仍在处理中，请稍后刷新')
+    super('研究对话仍在初始化，请稍后刷新')
     this.name = 'AnalysisStillProcessingError'
   }
 }
@@ -381,7 +382,7 @@ export const useResearchStore = defineStore('research', () => {
       return payload
     } catch (requestError) {
       if (!isRequestTimeout(requestError)) throw requestError
-      addSystemMessage('研究解析仍在处理中，请稍后刷新')
+      addSystemMessage('研究对话仍在初始化，正在确认会话状态……')
     }
 
     const deadline = Date.now() + 120_000
@@ -391,8 +392,7 @@ export const useResearchStore = defineStore('research', () => {
           projectId,
           resourceId,
         )).data.data
-        if (payload.analysisGenerationStatus === 'READY'
-          || payload.analysisGenerationStatus === 'FAILED') return payload
+        return payload
       } catch (pollError) {
         if (!isAxiosError(pollError)) throw pollError
       }
@@ -499,7 +499,7 @@ export const useResearchStore = defineStore('research', () => {
     isUploading.value = true
     uploadStatus.value = 'UPLOADING'
     const placeholderId = -Date.now()
-    let processingStage: 'upload' | 'text-extraction' | 'indexing' | 'ai-analysis' = 'upload'
+    let processingStage: 'upload' | 'text-extraction' | 'indexing' | 'session-initialization' = 'upload'
     let uploadedResource: ResearchResource | null = null
     resources.value.push({
       resourceId: placeholderId,
@@ -556,10 +556,8 @@ export const useResearchStore = defineStore('research', () => {
           addSystemMessage('研究知识索引完成')
         }
       }
-      isAnalyzing.value = true
-      processingStage = 'ai-analysis'
-      uploadStatus.value = 'ANALYZING'
-      addSystemMessage('正在进行结构化研究解析…')
+      processingStage = 'session-initialization'
+      addSystemMessage('研究文档知识库已就绪，正在准备研究对话…')
       cacheActiveWorkspace()
       if (useMock) {
         const snapshot = await researchMockService.createSession(
@@ -584,18 +582,14 @@ export const useResearchStore = defineStore('research', () => {
           scope: 'RESOURCE', resourceId: uploaded.resourceId,
         }))
         localStorage.setItem(resourcesStorageKey(project.projectId), JSON.stringify(resources.value))
-        addSystemMessage(payload.analysisGenerationStatus === 'FAILED'
-          ? '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析'
-          : '论文解析完成，可在右侧查看研究解析与证据卡。')
+        addSystemMessage('研究解析待探索 · 可通过下方研究探索逐步完善')
       }
       const completedResource = resources.value.find((item) => item.resourceId === uploaded.resourceId)
       if (completedResource) {
-        completedResource.processingStatus = analysisGenerationStatus.value === 'FAILED'
-          ? 'TEXT_EXTRACTED'
-          : 'ANALYZED'
+        completedResource.processingStatus = 'TEXT_EXTRACTED'
         completedResource.errorMessage = null
       }
-      uploadStatus.value = analysisGenerationStatus.value === 'FAILED' ? 'TEXT_EXTRACTED' : 'ANALYZED'
+      uploadStatus.value = 'TEXT_EXTRACTED'
     } catch (requestError) {
       const resource = uploadedResource
         ? resources.value.find((item) => item.resourceId === uploadedResource?.resourceId) ?? uploadedResource
@@ -619,19 +613,19 @@ export const useResearchStore = defineStore('research', () => {
           resource.indexStatus = 'ready'
           resource.errorMessage = null
         }
-        uploadStatus.value = 'ANALYZING'
+        uploadStatus.value = 'TEXT_EXTRACTED'
         error.value = ''
         addSystemMessage(requestError.message)
         return
       }
-      if (processingStage === 'ai-analysis') {
+      if (processingStage === 'session-initialization') {
         if (resource) {
           resource.processingStatus = 'TEXT_EXTRACTED'
           resource.indexStatus = 'ready'
           resource.errorMessage = null
         }
         uploadStatus.value = 'TEXT_EXTRACTED'
-        error.value = messageFromError(requestError, '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析')
+        error.value = messageFromError(requestError, '研究对话初始化失败，请稍后重试')
         addSystemMessage(error.value)
         return
       }
@@ -650,7 +644,7 @@ export const useResearchStore = defineStore('research', () => {
               ? '文本提取失败'
               : processingStage === 'indexing'
                 ? '知识索引构建失败'
-                : 'AI研究解析失败',
+                : '研究对话初始化失败',
         )
       }
       uploadStatus.value = 'FAILED'
@@ -671,16 +665,15 @@ export const useResearchStore = defineStore('research', () => {
       error.value = '上传未完成，请重新选择原始文件'
       return
     }
-    const analysisOnly = resource.indexStatus === 'ready'
+    const sessionOnly = resource.indexStatus === 'ready'
       && ['TEXT_EXTRACTED', 'REVIEWED', 'CARD_READY'].includes(resource.processingStatus)
-    isExtracting.value = !analysisOnly
-    isAnalyzing.value = analysisOnly
+    isExtracting.value = !sessionOnly
     error.value = ''
-    if (!analysisOnly) resource.processingStatus = 'TEXT_EXTRACTING'
-    let processingStage: 'text-extraction' | 'indexing' | 'ai-analysis' = analysisOnly ? 'ai-analysis' : 'text-extraction'
-    addSystemMessage(analysisOnly ? '正在重新执行AI结构化研究解析……' : '正在重新解析研究资源……')
+    if (!sessionOnly) resource.processingStatus = 'TEXT_EXTRACTING'
+    let processingStage: 'text-extraction' | 'indexing' | 'session-initialization' = sessionOnly ? 'session-initialization' : 'text-extraction'
+    addSystemMessage(sessionOnly ? '正在准备研究对话……' : '正在重新解析研究资源……')
     try {
-      if (analysisOnly) {
+      if (sessionOnly) {
         if (useMock) {
           const snapshot = await researchMockService.createSession(project.projectId, resourceId, project.topic)
           applySnapshot(snapshot)
@@ -697,9 +690,7 @@ export const useResearchStore = defineStore('research', () => {
             scope: 'RESOURCE', resourceId,
           }))
         }
-        addSystemMessage(analysisGenerationStatus.value === 'FAILED'
-          ? '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析'
-          : 'AI结构化研究解析已重新执行。')
+        addSystemMessage('研究解析待探索 · 可通过下方研究探索逐步完善')
         return
       }
       const extracted = useMock
@@ -708,8 +699,7 @@ export const useResearchStore = defineStore('research', () => {
       Object.assign(resource, extracted)
       resource.processingStatus = 'TEXT_EXTRACTED'
       if (useMock) {
-        isAnalyzing.value = true
-        processingStage = 'ai-analysis'
+        processingStage = 'session-initialization'
         const snapshot = await researchMockService.createSession(project.projectId, resourceId, project.topic)
         applySnapshot(snapshot)
       } else {
@@ -718,8 +708,7 @@ export const useResearchStore = defineStore('research', () => {
           resource.indexStatus = 'indexing'
           Object.assign(resource, await waitForIndexReady(project.projectId, resourceId))
         }
-        isAnalyzing.value = true
-        processingStage = 'ai-analysis'
+        processingStage = 'session-initialization'
         const payload = await createResourceSessionWithRecovery(project.projectId, resourceId)
         const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
@@ -732,9 +721,7 @@ export const useResearchStore = defineStore('research', () => {
           scope: 'RESOURCE', resourceId,
         }))
       }
-      addSystemMessage(analysisGenerationStatus.value === 'FAILED'
-        ? '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析'
-        : '研究资源重新解析完成')
+      addSystemMessage('研究文档知识库已就绪，可通过研究探索逐步完善解析')
     } catch (requestError) {
       const currentResource = resources.value.find((item) => item.resourceId === resourceId) ?? resource
       if (requestError instanceof IndexingTimeoutError) {
@@ -755,11 +742,11 @@ export const useResearchStore = defineStore('research', () => {
         addSystemMessage(requestError.message)
         return
       }
-      if (processingStage === 'ai-analysis') {
+      if (processingStage === 'session-initialization') {
         currentResource.processingStatus = 'TEXT_EXTRACTED'
         currentResource.indexStatus = 'ready'
         currentResource.errorMessage = null
-        error.value = messageFromError(requestError, '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析')
+        error.value = messageFromError(requestError, '研究对话初始化失败，请稍后重试')
         addSystemMessage(error.value)
         return
       }
@@ -784,7 +771,7 @@ export const useResearchStore = defineStore('research', () => {
     }
   }
 
-  async function sendMessage(content: string, retryMessageId?: number | string): Promise<boolean> {
+  async function sendMessage(content: string, retryMessageId?: number | string, analysisTargetField?: ResearchAnalysisContentKey): Promise<boolean> {
     const project = currentProject.value
     const normalizedContent = content.trim()
     if (!project) {
@@ -817,12 +804,14 @@ export const useResearchStore = defineStore('research', () => {
       if (useMock) {
         normalized = await researchMockService.sendMessage(project.projectId, normalizedContent)
       } else {
-        const response = await sendResearchMessageApi(session.sessionId, normalizedContent)
+        const response = analysisTargetField
+          ? await sendResearchMessageApi(session.sessionId, normalizedContent, analysisTargetField)
+          : await sendResearchMessageApi(session.sessionId, normalizedContent)
         const payload = response.data.data
         normalized = {
           userMessage: backendMessage(payload.userMessage),
           assistantMessage: backendMessage(payload.assistantMessage),
-          updatedAnalysis: backendAnalysis(payload.latestAnalysis),
+          updatedAnalysis: backendAnalysis(payload.latestAnalysis, payload),
           readiness: payload.readiness,
           evidenceDraftGenerated: payload.evidenceDraftGenerated ?? false,
           evidenceCardId: payload.evidenceCardId ?? null,
@@ -833,7 +822,7 @@ export const useResearchStore = defineStore('research', () => {
       messages.value.push(normalized.assistantMessage)
       if (normalized.updatedAnalysis) {
         analysis.value = normalized.updatedAnalysis
-        analysisGenerationStatus.value = 'READY'
+        analysisGenerationStatus.value = normalized.updatedAnalysis.generationStatus ?? 'READY'
       }
       if (normalized.readiness) setReadiness(normalized.readiness)
       if (normalized.evidenceDraftGenerated) {

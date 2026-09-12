@@ -3,6 +3,7 @@ import type {
   EvidenceCardEditableFields,
   EvidenceReadiness,
   ResearchAnalysis,
+  ResearchAnalysisContentKey,
   ResearchResource,
 } from '@/types/research'
 
@@ -33,7 +34,7 @@ export interface ResearchAnalysisVersionPayload {
   version: number
   generationStatus: 'PENDING' | 'READY' | 'FAILED'
   latestAnalysis: ResearchAnalysis
-  fieldSources: Record<string, 'MOCK' | 'TEACHER'>
+  fieldSources: Record<string, 'MOCK' | 'AI_CHAT' | 'TEACHER'>
   teacherConfirmed: boolean
   teacherConfirmedAt?: string | null
   readiness: EvidenceReadiness
@@ -59,7 +60,7 @@ export interface BackendSessionPayload {
   messages: BackendChatMessage[]
   latestAnalysis: BackendAnalysisPayload | null
   analysisGenerationStatus?: 'PENDING' | 'READY' | 'FAILED' | null
-  fieldSources?: Record<string, 'MOCK' | 'TEACHER'>
+  fieldSources?: Record<string, 'MOCK' | 'AI_CHAT' | 'TEACHER'>
   teacherConfirmed?: boolean
   version?: number
   readiness: (EvidenceReadiness & { ready?: boolean }) | null
@@ -96,6 +97,10 @@ export interface BackendMessagePayload {
   assistantMessage: BackendChatMessage
   analysisPatch?: Partial<ResearchAnalysis> | null
   latestAnalysis: BackendAnalysisPayload | null
+  analysisGenerationStatus?: 'PENDING' | 'READY' | 'FAILED' | null
+  fieldSources?: Record<string, 'MOCK' | 'AI_CHAT' | 'TEACHER'>
+  teacherConfirmed?: boolean
+  version?: number
   readiness: (EvidenceReadiness & { ready?: boolean }) | null
   evidenceDraftGenerated?: boolean
   evidenceCardId?: number | null
@@ -151,9 +156,10 @@ export const getResearchMessages = async (sessionId: number) => {
   return response.data.data.messages
 }
 
-export const sendResearchMessage = (sessionId: number, content: string) =>
+export const sendResearchMessage = (sessionId: number, content: string, analysisTargetField?: ResearchAnalysisContentKey) =>
   http.post<ApiEnvelope<BackendMessagePayload>>(`/research-chat/sessions/${sessionId}/messages`, {
     content,
+    analysisTargetField,
   }, { timeout: RESEARCH_AGENT_TIMEOUT_MS })
 
 export const updateResearchAnalysis = (sessionId: number, analysis: ResearchAnalysis) =>

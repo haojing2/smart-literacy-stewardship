@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import type { ResearchAnalysis, ResearchChatMessage, ResearchResource } from '@/types/research'
+import { RESEARCH_ANALYSIS_FIELDS, type ResearchAnalysis, type ResearchAnalysisContentKey, type ResearchChatMessage, type ResearchResource } from '@/types/research'
 import SelectedResourcesBar from './SelectedResourcesBar.vue'
 import UserMessage from './UserMessage.vue'
 import AssistantMessage from './AssistantMessage.vue'
@@ -20,7 +20,7 @@ const props = withDefaults(defineProps<{
   hasActiveSession: boolean
   analysis: ResearchAnalysis | null
   initializationFailed?: boolean
-  sendMessage: (content: string) => Promise<boolean>
+  sendMessage: (content: string, analysisTargetField?: ResearchAnalysisContentKey) => Promise<boolean>
 }>(), { activeScopeLabel: '项目知识库' })
 const emit = defineEmits<{
   upload: [file: File]
@@ -31,6 +31,7 @@ const emit = defineEmits<{
 }>()
 
 const composer = ref('')
+const analysisTargetField = ref<ResearchAnalysisContentKey>()
 const messageList = ref<HTMLElement>()
 const fileInput = ref<HTMLInputElement>()
 const chatComposer = ref<InstanceType<typeof ChatComposer>>()
@@ -47,17 +48,27 @@ let lastTypingScrollAt = 0
 const empty = computed(() => props.resources.length === 0 && props.messages.length === 0)
 const explorationScaffolds = computed(() => {
   const analysis = props.analysis
-  return [
-    { key: 'researchTopics', label: '研究问题', question: '围绕当前课程主题，已有研究主要关注哪些教学或学习问题？', complete: Boolean(analysis?.researchTopics.length) },
-    { key: 'participants', label: '研究对象', question: '针对当前研究的目标对象是哪些学生群体？', complete: Boolean(analysis?.participants.length) },
-    { key: 'aiLiteracyDimensions', label: '能力重点', question: '已有研究主要关注学生哪些能力或素养的发展？', complete: Boolean(analysis?.aiLiteracyDimensions.length) },
-    { key: 'teachingStrategies', label: '教学策略', question: '哪些教学策略得到已有研究支持，并适合当前课程？', complete: Boolean(analysis?.teachingStrategies.length) },
-    { key: 'intervention', label: '干预周期/实施时长', question: '研究中的干预或实施持续了多长时间？', complete: Boolean(analysis?.intervention) },
-    { key: 'assessmentTools', label: '评价方式', question: '已有研究通常如何评价学生的学习效果？', complete: Boolean(analysis?.assessmentTools.length) },
-    { key: 'mainFindings', label: '主要发现', question: '相关研究的主要研究发现是什么？', complete: Boolean(analysis?.mainFindings.length) },
-    { key: 'limitations', label: '研究局限', question: '这些研究报告了哪些研究局限？', complete: Boolean(analysis?.limitations.length) },
-  ].sort((left, right) => Number(left.complete) - Number(right.complete))
+  const questions: Record<ResearchAnalysisContentKey, string> = {
+    participants: '针对当前研究的目标对象是哪些学生群体？',
+    researchTopics: '围绕当前课程主题，已有研究主要关注哪些教学或学习问题？',
+    aiLiteracyDimensions: '已有研究主要关注学生哪些能力或素养的发展？',
+    teachingStrategies: '哪些教学策略得到已有研究支持，并适合当前课程？',
+    intervention: '研究中的干预或实施持续了多长时间？',
+    assessmentTools: '已有研究通常如何评价学生的学习效果？',
+    mainFindings: '相关研究的主要研究发现是什么？',
+    limitations: '这些研究报告了哪些研究局限？',
+    teachingImplications: '这项研究对当前课程设计有哪些明确的教学启示？',
+  }
+  return RESEARCH_ANALYSIS_FIELDS.map((field) => {
+    const value = analysis?.[field.key]
+    return { ...field, question: questions[field.key], complete: Array.isArray(value) ? value.length > 0 : Boolean(value) }
+  }).sort((left, right) => Number(left.complete) - Number(right.complete))
 })
+
+function chooseScaffold(key: ResearchAnalysisContentKey, question: string) {
+  analysisTargetField.value = key
+  composer.value = question
+}
 
 function startQuestion() {
   chatComposer.value?.focus()
@@ -67,8 +78,12 @@ async function send() {
   const content = composer.value.trim()
   if (!content || !props.hasActiveSession || props.sending) return
   finishTyping()
-  if (await props.sendMessage(content)) {
+  const sent = analysisTargetField.value
+    ? await props.sendMessage(content, analysisTargetField.value)
+    : await props.sendMessage(content)
+  if (sent) {
     composer.value = ''
+    analysisTargetField.value = undefined
     const message = [...props.messages]
       .reverse()
       .find((item) => item.role === 'ASSISTANT')
@@ -237,7 +252,7 @@ onBeforeUnmount(finishTyping)
 
       <template v-for="message in messages" :key="message.messageId">
         <UserMessage v-if="message.role === 'USER' && message.messageType === 'TEXT'" :message="message" @retry="$emit('retryMessage', $event)" />
-        <AssistantMessage v-else-if="message.role === 'ASSISTANT'" :content="assistantContent(message)" :typing="typingMessageId === message.messageId" :evidence-ready="evidenceReady" @view-source="viewSource" @reanalyze="composer = '请根据当前研究资源重新分析核心研究信息'" />
+        <AssistantMessage v-else-if="message.role === 'ASSISTANT'" :content="assistantContent(message)" :typing="typingMessageId === message.messageId" :evidence-ready="evidenceReady" @view-source="viewSource" />
         <div v-else-if="message.messageType === 'FILE'" class="file-message">
           <FileAttachmentCard :resource="resourceForMessage(message)" @retry="$emit('retryResource', $event)" />
         </div>
@@ -251,7 +266,7 @@ onBeforeUnmount(finishTyping)
       <div class="composer-content">
         <div class="exploration-scaffold" aria-label="研究探索脚手架">
           <span class="scaffold-title">研究探索</span>
-          <button v-for="item in explorationScaffolds" :key="item.key" type="button" class="scaffold-chip" :class="{ complete: item.complete }" @click="composer = item.question"><span v-if="item.complete">✓</span>{{ item.label }}</button>
+          <button v-for="item in explorationScaffolds" :key="item.key" type="button" class="scaffold-chip" :class="{ complete: item.complete }" @click="chooseScaffold(item.key, item.question)"><span v-if="item.complete">✓</span>{{ item.label }}</button>
         </div>
         <ChatComposer
           ref="chatComposer"

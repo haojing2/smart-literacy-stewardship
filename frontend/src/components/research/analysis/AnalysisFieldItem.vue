@@ -4,7 +4,7 @@ import { computed } from 'vue'
 const props = defineProps<{
   label: string
   value: string
-  source?: 'MOCK' | 'TEACHER'
+  source?: 'MOCK' | 'AI_CHAT' | 'TEACHER'
 }>()
 defineEmits<{ edit: [] }>()
 

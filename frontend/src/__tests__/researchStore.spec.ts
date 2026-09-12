@@ -376,9 +376,9 @@ describe('research store message preconditions', () => {
     await store.initialize(12)
     await store.uploadAndProcess(new File(['pdf'], 'large.pdf', { type: 'application/pdf' }))
 
-    expect(store.resources.find(item => item.resourceId === 96)?.processingStatus).toBe('ANALYZED')
+    expect(store.resources.find(item => item.resourceId === 96)?.processingStatus).toBe('TEXT_EXTRACTED')
     expect(store.resources.find(item => item.resourceId === 96)?.indexStatus).toBe('ready')
-    expect(store.uploadStatus).toBe('ANALYZED')
+    expect(store.uploadStatus).toBe('TEXT_EXTRACTED')
     expect(store.error).toBe('')
     expect(mocks.createResearchSession).toHaveBeenCalledWith(12, 96)
   })
@@ -411,10 +411,10 @@ describe('research store message preconditions', () => {
     await store.initialize(12)
     await store.uploadAndProcess(new File(['pdf'], 'analysis.pdf', { type: 'application/pdf' }))
 
-    expect(store.uploadStatus).toBe('ANALYZED')
+    expect(store.uploadStatus).toBe('TEXT_EXTRACTED')
     expect(store.error).toBe('')
     expect(store.activeSession?.sessionId).toBe(99)
-    expect(store.resources.find(item => item.resourceId === 98)?.processingStatus).toBe('ANALYZED')
+    expect(store.resources.find(item => item.resourceId === 98)?.processingStatus).toBe('TEXT_EXTRACTED')
   })
 
   it('keeps an indexed PDF usable when backend structured analysis fails', async () => {
