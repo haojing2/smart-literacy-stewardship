@@ -1375,6 +1375,21 @@ class ResearchChatService:
         generation_status: str | None,
     ) -> ResearchChatSessionResponse:
         messages = self.repository.list_messages(session_id=session.id)
+        analysis_record = None
+        if analysis is not None:
+            analysis_record = (
+                self.repository.get_latest_analysis(resource_id=session.resource_id)
+                if session.resource_id is not None
+                else self.repository.get_latest_session_analysis(session_id=session.id)
+            )
+        field_sources = (
+            {
+                **ResearchAnalysisStateService.initial_mock_sources(),
+                **(analysis_record.field_sources_json or {}),
+            }
+            if analysis_record is not None
+            else {}
+        )
         return ResearchChatSessionResponse(
             session_id=session.id,
             project_id=session.project_id,
@@ -1384,6 +1399,9 @@ class ResearchChatService:
             messages=[self._message_response(message) for message in messages],
             latest_analysis=analysis,
             analysis_generation_status=generation_status,
+            field_sources=field_sources,
+            teacher_confirmed=(analysis_record.teacher_confirmed if analysis_record else False),
+            version=(analysis_record.version if analysis_record else None),
             readiness=(
                 ResearchAnalysisStateService.readiness(analysis, source_metadata)
                 if analysis is not None

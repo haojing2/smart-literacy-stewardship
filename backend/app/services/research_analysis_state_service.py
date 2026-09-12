@@ -11,13 +11,14 @@ from app.services.evidence_readiness_service import EvidenceReadinessService
 
 EDITABLE_FIELD_SOURCES = {
     "participants": "research_subjects",
-    "researchTopic": "research_topics",
+    "researchTopics": "research_topics",
     "aiLiteracyDimensions": "ai_literacy_dimensions",
     "teachingStrategies": "teaching_strategies",
     "intervention": "intervention_duration",
     "assessmentTools": "assessment_tools",
     "mainFindings": "main_findings",
     "limitations": "limitations",
+    "teachingImplications": "teaching_implications",
 }
 
 
@@ -72,21 +73,18 @@ class ResearchAnalysisStateService:
         *,
         source_excerpt: str | None,
         source_metadata: EvidenceSourceMetadata | None,
-        teaching_implications: str | None = None,
     ) -> ResearchAnalysisResult:
         return cls.with_readiness(
             ResearchAnalysisResult(
                 research_subjects=request.participants,
-                research_topics=(
-                    [request.research_topic] if request.research_topic else []
-                ),
+                research_topics=request.research_topics,
                 ai_literacy_dimensions=request.ai_literacy_dimensions,
                 teaching_strategies=request.teaching_strategies,
                 intervention_duration=request.intervention,
                 assessment_tools=request.assessment_tools,
                 main_findings=request.main_findings,
                 limitations=request.limitations,
-                teaching_implications=teaching_implications,
+                teaching_implications=request.teaching_implications,
                 source_excerpt=source_excerpt,
             ),
             source_metadata,
@@ -98,15 +96,14 @@ class ResearchAnalysisStateService:
     ) -> ResearchAnalysisEditableView:
         return ResearchAnalysisEditableView(
             participants=analysis.research_subjects,
-            research_topic=(
-                analysis.research_topics[0] if analysis.research_topics else None
-            ),
+            research_topics=analysis.research_topics,
             ai_literacy_dimensions=analysis.ai_literacy_dimensions,
             teaching_strategies=analysis.teaching_strategies,
             intervention=analysis.intervention_duration,
             assessment_tools=analysis.assessment_tools,
             main_findings=analysis.main_findings,
             limitations=analysis.limitations,
+            teaching_implications=analysis.teaching_implications,
         )
 
     @staticmethod

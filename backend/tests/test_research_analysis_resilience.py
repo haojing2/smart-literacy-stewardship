@@ -18,6 +18,7 @@ from app.services.chunk_service import MarkdownChunk
 from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.knowledge_base_path_service import KnowledgeBasePathService
 from app.services.project_knowledge_service import ProjectKnowledgeService, ProjectKnowledgeSource
+from app.services.research_analysis_evidence_service import RESEARCH_ANALYSIS_FIELD_QUERIES
 from app.services.research_chat_service import (
     ResearchChatService,
     ResearchKnowledgeIndexNotReadyError,
@@ -339,8 +340,10 @@ def test_bounded_evidence_respects_chunk_and_character_limits(monkeypatch) -> No
     evidence, sources, retrieved_count = asyncio.run(
         service._prepare_analysis_evidence(project_id=1020, file_id=16)
     )
-    # Two query variants per field improve recall before local fusion.
-    assert retrieved_count == 90
+    # Two or three query variants per field improve recall before local fusion.
+    assert retrieved_count == sum(
+        len(queries) for queries in RESEARCH_ANALYSIS_FIELD_QUERIES.values()
+    ) * 5
     assert len(sources) <= 4
     assert len(evidence) <= 600
     assert all(source.file_id == 16 for source in sources)

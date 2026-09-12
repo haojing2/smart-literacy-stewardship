@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 
 from app.assistants.base import ResearchAssistantProvider
 from app.assistants.spark_client import (
-    SparkContractError, SparkLLMClient, SparkOutputLengthError, SparkResponseParseError,
+    SparkConfigurationError, SparkContractError, SparkLLMClient, SparkOutputLengthError,
+    SparkResponseParseError,
 )
 from app.core.config import settings
 from app.assistants.prompts.course_assessment import build_course_assessment_messages
@@ -167,12 +168,74 @@ class SparkResearchAssistant(ResearchAssistantProvider):
     def provider_name(self) -> str:
         return "spark"
 
+    @staticmethod
+    def _research_analysis_model_id() -> str:
+        model_id = settings.spark_research_analysis_model_id.strip()
+        if not model_id:
+            raise SparkConfigurationError(
+                "SPARK_RESEARCH_ANALYSIS_MODEL_ID must be configured independently"
+            )
+        return model_id
+
+    async def probe_research_analysis_model(
+        self, *, project_id: int, resource_id: int
+    ) -> None:
+        model_id = self._research_analysis_model_id()
+        started_at = time.perf_counter()
+        try:
+            payload = await self._client.chat_json(
+                [
+                    {
+                        "role": "system",
+                        "content": "Return only the requested tiny JSON object.",
+                    },
+                    {
+                        "role": "user",
+                        "content": 'Return exactly {"ok":true}.',
+                    },
+                ],
+                repair=False,
+                max_tokens=256,
+                model_id=model_id,
+                performance_context={
+                    "project_id": project_id,
+                    "resource_id": resource_id,
+                    "analysis_batch": "PROBE",
+                    "field": None,
+                    "context_chars": 27,
+                    "reasoning_exhaustion_ratio": 0.90,
+                },
+            )
+            if payload != {"ok": True}:
+                raise SparkContractError("Research analysis model probe contract failed")
+        except Exception as exc:
+            logger.warning(
+                "Research analysis model probe project_id=%s resource_id=%s "
+                "analysis_batch=PROBE analysis_model=%s model_probe_status=FAILED "
+                "requested_max_tokens=256 elapsed_ms=%s failure_type=%s",
+                project_id,
+                resource_id,
+                model_id,
+                round((time.perf_counter() - started_at) * 1000),
+                type(exc).__name__,
+            )
+            raise
+        logger.info(
+            "Research analysis model probe project_id=%s resource_id=%s "
+            "analysis_batch=PROBE analysis_model=%s model_probe_status=READY "
+            "requested_max_tokens=256 elapsed_ms=%s",
+            project_id,
+            resource_id,
+            model_id,
+            round((time.perf_counter() - started_at) * 1000),
+        )
+
     async def analyze_research(self, request: ResearchAnalysisRequest) -> ResearchAnalysisResponse:
         result = await self._from_messages(
             build_research_analysis_messages(request),
             ResearchAnalysisResult,
             max_tokens=settings.spark_research_analysis_max_tokens,
-            model_id=settings.spark_research_analysis_model_id,
+            model_id=self._research_analysis_model_id(),
             performance_context={
                 "project_id": request.project_id,
                 "resource_id": request.resource_id,
@@ -214,6 +277,7 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                 f"Unsupported research analysis batch/field: {batch}/{field}"
             )
         max_tokens = 2048 if field else settings.spark_research_analysis_max_tokens
+        model_id = self._research_analysis_model_id()
         messages = build_research_analysis_supplement_messages(request)
         performance_context = {
             "project_id": request.project_id,
@@ -233,7 +297,7 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                     messages,
                     repair=False,
                     max_tokens=max_tokens,
-                    model_id=settings.spark_research_analysis_model_id,
+                    model_id=model_id,
                     performance_context=performance_context,
                 )
             except SparkResponseParseError:
@@ -248,7 +312,7 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                     ],
                     repair=False,
                     max_tokens=max_tokens,
-                    model_id=settings.spark_research_analysis_model_id,
+                    model_id=model_id,
                     performance_context={**performance_context, "repair_triggered": True},
                 )
 
@@ -264,12 +328,13 @@ class SparkResearchAssistant(ResearchAssistantProvider):
 
             logger.info(
                 "Research analysis batch validation project_id=%s resource_id=%s "
-                "analysis_batch=%s field=%s validation_error=%s normalize_result=%s "
+                "analysis_batch=%s field=%s analysis_model=%s validation_error=%s normalize_result=%s "
                 "batch_status=READY repair_triggered=%s elapsed_ms=%s",
                 request.project_id,
                 request.resource_id,
                 batch,
                 field,
+                model_id,
                 validation_error,
                 normalize_result,
                 repaired,
@@ -281,12 +346,13 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         except Exception as exc:
             logger.warning(
                 "Research analysis batch validation project_id=%s resource_id=%s "
-                "analysis_batch=%s field=%s validation_error=%s normalize_result=FAILED "
+                "analysis_batch=%s field=%s analysis_model=%s validation_error=%s normalize_result=FAILED "
                 "batch_status=FAILED repair_triggered=%s elapsed_ms=%s failure_type=%s",
                 request.project_id,
                 request.resource_id,
                 batch,
                 field,
+                model_id,
                 type(exc).__name__,
                 repaired,
                 round((time.perf_counter() - started_at) * 1000),

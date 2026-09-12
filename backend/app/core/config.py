@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     spark_resource_max_tokens: int = 8192
     spark_resource_retry_max_tokens: int = 16384
     spark_research_analysis_max_tokens: int = 4096
-    spark_research_analysis_model_id: str | None = None
+    spark_research_analysis_model_id: str = "spark-x2.5-1.7b"
     spark_timeout_seconds: float = 120.0
 
     # Assistant credentials deliberately do not reuse the OpenAI-compatible

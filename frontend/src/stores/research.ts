@@ -55,17 +55,25 @@ function loadActiveScope(projectId: number): ActiveScopeState | null {
   }
 }
 
-function backendAnalysis(payload: BackendAnalysisPayload | null): ResearchAnalysis | null {
+function backendAnalysis(
+  payload: BackendAnalysisPayload | null,
+  metadata: Pick<BackendSessionPayload, 'fieldSources' | 'teacherConfirmed' | 'version' | 'analysisGenerationStatus'> = {},
+): ResearchAnalysis | null {
   if (!payload) return null
   return {
     participants: payload.researchSubjects,
-    researchTopic: payload.researchTopics[0] ?? null,
+    researchTopics: payload.researchTopics,
     aiLiteracyDimensions: payload.aiLiteracyDimensions,
     teachingStrategies: payload.teachingStrategies,
     intervention: payload.interventionDuration,
     assessmentTools: payload.assessmentTools,
     mainFindings: payload.mainFindings,
     limitations: payload.limitations,
+    teachingImplications: payload.teachingImplications ?? null,
+    fieldSources: metadata.fieldSources,
+    teacherConfirmed: metadata.teacherConfirmed,
+    version: metadata.version,
+    generationStatus: metadata.analysisGenerationStatus ?? undefined,
   }
 }
 
@@ -406,7 +414,7 @@ export const useResearchStore = defineStore('research', () => {
     applySnapshot({
       session: backendSession(payload),
       messages: payload.messages.map(backendMessage),
-      analysis: backendAnalysis(payload.latestAnalysis),
+      analysis: backendAnalysis(payload.latestAnalysis, payload),
       readiness: payload.readiness,
       evidenceDraft: currentEvidence,
       analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
@@ -450,7 +458,7 @@ export const useResearchStore = defineStore('research', () => {
       applySnapshot({
         session: backendSession(payload),
         messages: payload.messages.map(backendMessage),
-        analysis: backendAnalysis(payload.latestAnalysis),
+        analysis: backendAnalysis(payload.latestAnalysis, payload),
         readiness: payload.readiness,
         evidenceDraft: projectEvidence,
         analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
@@ -465,7 +473,7 @@ export const useResearchStore = defineStore('research', () => {
         applySnapshot({
           session: backendSession(resourcePayload),
           messages: resourcePayload.messages.map(backendMessage),
-          analysis: backendAnalysis(resourcePayload.latestAnalysis),
+          analysis: backendAnalysis(resourcePayload.latestAnalysis, resourcePayload),
           readiness: resourcePayload.readiness,
           evidenceDraft: resourceEvidence,
           analysisGenerationStatus: resourcePayload.analysisGenerationStatus ?? null,
@@ -568,7 +576,7 @@ export const useResearchStore = defineStore('research', () => {
         const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
-          analysis: backendAnalysis(payload.latestAnalysis), readiness: payload.readiness,
+          analysis: backendAnalysis(payload.latestAnalysis, payload), readiness: payload.readiness,
           evidenceDraft: resourceEvidence,
           analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
         })
@@ -577,7 +585,7 @@ export const useResearchStore = defineStore('research', () => {
         }))
         localStorage.setItem(resourcesStorageKey(project.projectId), JSON.stringify(resources.value))
         addSystemMessage(payload.analysisGenerationStatus === 'FAILED'
-          ? 'AI研究解析失败，论文文本和知识索引仍可使用，可在右侧重新分析。'
+          ? '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析'
           : '论文解析完成，可在右侧查看研究解析与证据卡。')
       }
       const completedResource = resources.value.find((item) => item.resourceId === uploaded.resourceId)
@@ -623,7 +631,7 @@ export const useResearchStore = defineStore('research', () => {
           resource.errorMessage = null
         }
         uploadStatus.value = 'TEXT_EXTRACTED'
-        error.value = messageFromError(requestError, 'AI研究解析失败，可稍后重新分析')
+        error.value = messageFromError(requestError, '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析')
         addSystemMessage(error.value)
         return
       }
@@ -658,17 +666,42 @@ export const useResearchStore = defineStore('research', () => {
   async function retryResource(resourceId: number) {
     const project = currentProject.value
     const resource = resources.value.find((item) => item.resourceId === resourceId)
-    if (!project || !resource || isExtracting.value) return
+    if (!project || !resource || isExtracting.value || isAnalyzing.value) return
     if (resourceId < 0) {
       error.value = '上传未完成，请重新选择原始文件'
       return
     }
-    isExtracting.value = true
+    const analysisOnly = resource.indexStatus === 'ready'
+      && ['TEXT_EXTRACTED', 'REVIEWED', 'CARD_READY'].includes(resource.processingStatus)
+    isExtracting.value = !analysisOnly
+    isAnalyzing.value = analysisOnly
     error.value = ''
-    resource.processingStatus = 'TEXT_EXTRACTING'
-    let processingStage: 'text-extraction' | 'indexing' | 'ai-analysis' = 'text-extraction'
-    addSystemMessage('正在重新解析研究资源……')
+    if (!analysisOnly) resource.processingStatus = 'TEXT_EXTRACTING'
+    let processingStage: 'text-extraction' | 'indexing' | 'ai-analysis' = analysisOnly ? 'ai-analysis' : 'text-extraction'
+    addSystemMessage(analysisOnly ? '正在重新执行AI结构化研究解析……' : '正在重新解析研究资源……')
     try {
+      if (analysisOnly) {
+        if (useMock) {
+          const snapshot = await researchMockService.createSession(project.projectId, resourceId, project.topic)
+          applySnapshot(snapshot)
+        } else {
+          const payload = await createResourceSessionWithRecovery(project.projectId, resourceId)
+          const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
+          applySnapshot({
+            session: backendSession(payload), messages: payload.messages.map(backendMessage),
+            analysis: backendAnalysis(payload.latestAnalysis, payload), readiness: payload.readiness,
+            evidenceDraft: resourceEvidence,
+            analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
+          })
+          localStorage.setItem(activeScopeStorageKey(project.projectId), JSON.stringify({
+            scope: 'RESOURCE', resourceId,
+          }))
+        }
+        addSystemMessage(analysisGenerationStatus.value === 'FAILED'
+          ? '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析'
+          : 'AI结构化研究解析已重新执行。')
+        return
+      }
       const extracted = useMock
         ? await researchMockService.extractText(project.projectId, resourceId)
         : await extractTextWithRecovery(project.projectId, resource)
@@ -691,7 +724,7 @@ export const useResearchStore = defineStore('research', () => {
         const resourceEvidence = await loadEvidenceDraft(payload.evidenceCardId)
         applySnapshot({
           session: backendSession(payload), messages: payload.messages.map(backendMessage),
-          analysis: backendAnalysis(payload.latestAnalysis), readiness: payload.readiness,
+          analysis: backendAnalysis(payload.latestAnalysis, payload), readiness: payload.readiness,
           evidenceDraft: resourceEvidence,
           analysisGenerationStatus: payload.analysisGenerationStatus ?? null,
         })
@@ -700,7 +733,7 @@ export const useResearchStore = defineStore('research', () => {
         }))
       }
       addSystemMessage(analysisGenerationStatus.value === 'FAILED'
-        ? 'AI研究解析失败，论文文本和知识索引仍可使用，可在右侧重新分析。'
+        ? '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析'
         : '研究资源重新解析完成')
     } catch (requestError) {
       const currentResource = resources.value.find((item) => item.resourceId === resourceId) ?? resource
@@ -726,7 +759,7 @@ export const useResearchStore = defineStore('research', () => {
         currentResource.processingStatus = 'TEXT_EXTRACTED'
         currentResource.indexStatus = 'ready'
         currentResource.errorMessage = null
-        error.value = messageFromError(requestError, 'AI研究解析失败，可稍后重新分析')
+        error.value = messageFromError(requestError, '论文文档与知识索引已就绪 · AI结构化解析失败，可重新分析')
         addSystemMessage(error.value)
         return
       }
@@ -845,8 +878,15 @@ export const useResearchStore = defineStore('research', () => {
         }
       } else {
         const response = await updateResearchAnalysisApi(session.sessionId, updated)
-        analysis.value = { ...response.data.data.latestAnalysis, version: response.data.data.version }
-        analysisGenerationStatus.value = 'READY'
+        const data = response.data.data
+        analysis.value = {
+          ...data.latestAnalysis,
+          fieldSources: data.fieldSources,
+          teacherConfirmed: data.teacherConfirmed,
+          version: data.version,
+          generationStatus: data.generationStatus,
+        }
+        analysisGenerationStatus.value = data.generationStatus
         setReadiness(response.data.data.readiness)
         evidenceDraft.value = await loadEvidenceDraft(response.data.data.evidenceCardId)
         if (response.data.data.evidenceDraftGenerated) {
@@ -874,8 +914,16 @@ export const useResearchStore = defineStore('research', () => {
         setReadiness(result.readiness)
       } else {
         const response = await confirmResearchAnalysisApi(session.sessionId)
-        analysis.value = response.data.data.latestAnalysis
-        setReadiness(response.data.data.readiness)
+        const data = response.data.data
+        analysis.value = {
+          ...data.latestAnalysis,
+          fieldSources: data.fieldSources,
+          teacherConfirmed: data.teacherConfirmed,
+          version: data.version,
+          generationStatus: data.generationStatus,
+        }
+        analysisGenerationStatus.value = data.generationStatus
+        setReadiness(data.readiness)
       }
       return true
     } catch (requestError) {

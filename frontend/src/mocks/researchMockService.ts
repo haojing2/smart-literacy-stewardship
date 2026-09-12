@@ -29,7 +29,7 @@ function emptyReadiness(): EvidenceReadiness {
     readinessStatus: 'INCOMPLETE',
     missingRequiredFields: ['participants', 'mainFindings', 'teachingStrategies'],
     missingRecommendedFields: [
-      'researchTopic',
+      'researchTopics',
       'aiLiteracyDimensions',
       'intervention',
       'assessmentTools',
@@ -90,7 +90,7 @@ function calculateReadiness(analysis: ResearchAnalysis): EvidenceReadiness {
     sourceMetadata: true,
   }
   const recommended = {
-    researchTopic: Boolean(analysis.researchTopic?.trim()),
+    researchTopics: hasValues(analysis.researchTopics),
     aiLiteracyDimensions: hasValues(analysis.aiLiteracyDimensions),
     intervention: Boolean(analysis.intervention?.trim()),
     assessmentTools: hasValues(analysis.assessmentTools),
@@ -269,13 +269,14 @@ export const researchMockService = {
     }
     state.analysis = {
       participants: [],
-      researchTopic: projectTopic || null,
+      researchTopics: projectTopic ? [projectTopic] : [],
       aiLiteracyDimensions: ['INFORMATION_VERIFICATION'],
       teachingStrategies: [],
       intervention: null,
       assessmentTools: [],
       mainFindings: [],
       limitations: [],
+      teachingImplications: null,
       fieldSources: {},
       teacherConfirmed: false,
       version: 1,
@@ -351,7 +352,7 @@ export const researchMockService = {
     state.analysis = {
       ...analysis,
       fieldSources: Object.fromEntries(
-        ['participants', 'researchTopic', 'aiLiteracyDimensions', 'teachingStrategies', 'intervention', 'assessmentTools', 'mainFindings', 'limitations'].map((field) => [field, 'TEACHER']),
+        ['participants', 'researchTopics', 'aiLiteracyDimensions', 'teachingStrategies', 'intervention', 'assessmentTools', 'mainFindings', 'limitations', 'teachingImplications'].map((field) => [field, 'TEACHER']),
       ),
       teacherConfirmed: false,
       version: (analysis.version ?? 1) + 1,

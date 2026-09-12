@@ -248,6 +248,9 @@ class ResearchChatSessionResponse(ResearchAssistantSchema):
     messages: list[ResearchChatMessageResponse] = Field(default_factory=list)
     latest_analysis: ResearchAnalysisResult | None = None
     analysis_generation_status: Literal["PENDING", "READY", "FAILED"] | None = None
+    field_sources: dict[str, Literal["MOCK", "TEACHER"]] = Field(default_factory=dict)
+    teacher_confirmed: bool = False
+    version: int | None = None
     readiness: ResearchAnalysisReadiness | None = None
     evidence_card_id: int | None = None
     created_at: datetime
@@ -267,16 +270,28 @@ class ResearchChatSendMessageResponse(ResearchAssistantSchema):
 
 class ResearchAnalysisEditRequest(ResearchAssistantSchema):
     participants: list[str]
-    research_topic: str | None
+    research_topics: list[str]
     ai_literacy_dimensions: list[str]
     teaching_strategies: list[str]
     intervention: str | None
     assessment_tools: list[str]
     main_findings: list[str]
     limitations: list[str]
+    teaching_implications: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_singular_topic(cls, value: Any) -> Any:
+        """Keep old in-process callers compatible while the public payload uses a list."""
+        if isinstance(value, dict) and "researchTopics" not in value and "research_topics" not in value:
+            value = dict(value)
+            legacy = value.pop("researchTopic", value.pop("research_topic", None))
+            value["researchTopics"] = [legacy] if legacy else []
+        return value
 
     @field_validator(
         "participants",
+        "research_topics",
         "ai_literacy_dimensions",
         "teaching_strategies",
         "assessment_tools",
@@ -287,7 +302,7 @@ class ResearchAnalysisEditRequest(ResearchAssistantSchema):
     def clean_list_values(cls, values: list[str]) -> list[str]:
         return [value.strip() for value in values if value.strip()]
 
-    @field_validator("research_topic", "intervention")
+    @field_validator("intervention", "teaching_implications")
     @classmethod
     def empty_string_to_none(cls, value: str | None) -> str | None:
         return value or None
@@ -295,13 +310,14 @@ class ResearchAnalysisEditRequest(ResearchAssistantSchema):
 
 class ResearchAnalysisEditableView(ResearchAssistantSchema):
     participants: list[str]
-    research_topic: str | None
+    research_topics: list[str]
     ai_literacy_dimensions: list[str]
     teaching_strategies: list[str]
     intervention: str | None
     assessment_tools: list[str]
     main_findings: list[str]
     limitations: list[str]
+    teaching_implications: str | None
 
 
 class ResearchAnalysisVersionResponse(ResearchAssistantSchema):

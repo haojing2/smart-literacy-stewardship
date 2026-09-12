@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   sendResearchMessage: vi.fn(),
   uploadResearchResource: vi.fn(),
   extractResearchText: vi.fn(),
+  updateResearchAnalysis: vi.fn(),
+  confirmResearchAnalysis: vi.fn(),
 }))
 
 vi.mock('@/api/projects', () => ({ getProject: mocks.getProject }))
@@ -24,13 +26,13 @@ vi.mock('@/api/research', () => ({
   getLatestResearchSessionForResource: mocks.getLatestResearchSessionForResource,
   getProjectResearchResources: mocks.getProjectResearchResources,
   confirmEvidenceCard: mocks.confirmEvidenceCard,
-  confirmResearchAnalysis: vi.fn(),
+  confirmResearchAnalysis: mocks.confirmResearchAnalysis,
   extractResearchText: mocks.extractResearchText,
   getEvidenceCard: mocks.getEvidenceCard,
   getResearchSession: mocks.getResearchSession,
   sendResearchMessage: mocks.sendResearchMessage,
   updateEvidenceCard: vi.fn(),
-  updateResearchAnalysis: vi.fn(),
+  updateResearchAnalysis: mocks.updateResearchAnalysis,
   uploadResearchResource: mocks.uploadResearchResource,
 }))
 import { useResearchStore } from '@/stores/research'
@@ -198,6 +200,53 @@ describe('research store message preconditions', () => {
     expect(store.activeAnalysisSource).toBe('study.pdf')
     expect(store.analysisGenerationStatus).toBe('FAILED')
     expect(store.analysis?.participants).toEqual(['resource 91 participants'])
+  })
+
+  it('round-trips all analysis fields and retains update metadata', async () => {
+    localStorage.setItem('research-active-scope:12', JSON.stringify({ scope: 'RESOURCE', resourceId: 91 }))
+    mocks.getProjectResearchResources.mockResolvedValue({ data: { data: [{
+      resourceId: 91, fileName: 'study.pdf', mimeType: 'application/pdf', fileSize: 1024,
+      processingStatus: 'TEXT_EXTRACTED', indexStatus: 'ready',
+    }] } })
+    mocks.getLatestProjectResearchSession.mockResolvedValue({ data: { data: projectSession } })
+    const persisted = {
+      researchSubjects: ['Grade 5'], researchTopics: ['Question A', 'Question B'],
+      aiLiteracyDimensions: ['Design Thinking'], teachingStrategies: ['Inquiry'],
+      interventionDuration: '8 weeks', assessmentTools: ['Rubric'], mainFindings: ['Improved'],
+      limitations: ['Single school'], teachingImplications: 'Use authentic tasks',
+    }
+    mocks.getLatestResearchSessionForResource.mockResolvedValue({ data: { data: {
+      ...projectSession, sessionId: 92, resourceId: 91, latestAnalysis: persisted,
+      analysisGenerationStatus: 'READY', fieldSources: { researchTopics: 'TEACHER' },
+      teacherConfirmed: true, version: 3, readiness: ready,
+    } } })
+
+    const store = useResearchStore()
+    await store.initialize(12)
+    expect(store.analysis).toMatchObject({
+      researchTopics: ['Question A', 'Question B'], aiLiteracyDimensions: ['Design Thinking'],
+      teachingImplications: 'Use authentic tasks', fieldSources: { researchTopics: 'TEACHER' },
+      teacherConfirmed: true, version: 3,
+    })
+
+    const updated = { ...store.analysis!, aiLiteracyDimensions: ['Design Thinking', 'Data Literacy'] }
+    mocks.updateResearchAnalysis.mockResolvedValue({ data: { data: {
+      sessionId: 92, analysisId: 8, version: 4, generationStatus: 'READY',
+      latestAnalysis: updated, fieldSources: { aiLiteracyDimensions: 'TEACHER' },
+      teacherConfirmed: false, readiness: ready, evidenceCardId: null,
+    } } })
+    await expect(store.updateAnalysis(updated)).resolves.toBe(true)
+    expect(mocks.updateResearchAnalysis).toHaveBeenCalledWith(92, expect.objectContaining({
+      researchTopics: ['Question A', 'Question B'],
+      aiLiteracyDimensions: ['Design Thinking', 'Data Literacy'],
+      teachingImplications: 'Use authentic tasks',
+    }))
+    expect(store.analysis).toMatchObject({
+      researchTopics: ['Question A', 'Question B'],
+      aiLiteracyDimensions: ['Design Thinking', 'Data Literacy'],
+      teachingImplications: 'Use authentic tasks',
+      fieldSources: { aiLiteracyDimensions: 'TEACHER' }, teacherConfirmed: false, version: 4,
+    })
   })
 
   it('preloads resource evidence without replacing the active project workspace', async () => {
@@ -397,6 +446,29 @@ describe('research store message preconditions', () => {
     expect(resource?.errorMessage).toBeNull()
     expect(store.analysisGenerationStatus).toBe('FAILED')
     expect(store.uploadStatus).toBe('TEXT_EXTRACTED')
+  })
+
+  it('retries only AI analysis for an already indexed research resource', async () => {
+    const ready = {
+      resourceId: 102, fileName: 'ready.pdf', mimeType: 'application/pdf', fileSize: 10,
+      processingStatus: 'TEXT_EXTRACTED' as const, indexStatus: 'ready' as const, errorMessage: null,
+    }
+    mocks.createResearchSession.mockResolvedValue({ data: { data: {
+      ...projectSession, sessionId: 103, resourceId: 102, messages: [],
+      latestAnalysis: null, evidenceCardId: null, analysisGenerationStatus: 'FAILED',
+    } } })
+    const store = useResearchStore()
+    store.currentProject = { ...project }
+    store.resources = [ready]
+
+    await store.retryResource(102)
+
+    expect(mocks.extractResearchText).not.toHaveBeenCalled()
+    expect(mocks.getProjectResearchResources).not.toHaveBeenCalled()
+    expect(mocks.createResearchSession).toHaveBeenCalledWith(12, 102)
+    expect(store.resources[0]?.processingStatus).toBe('TEXT_EXTRACTED')
+    expect(store.resources[0]?.indexStatus).toBe('ready')
+    expect(store.analysisGenerationStatus).toBe('FAILED')
   })
 
   it('stops before session creation when the uploaded resource index fails', async () => {

@@ -62,7 +62,6 @@ class ResearchAnalysisService:
             request,
             source_excerpt=current_data.source_excerpt,
             source_metadata=source_metadata,
-            teaching_implications=current_data.teaching_implications,
         )
 
         try:

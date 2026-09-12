@@ -128,22 +128,26 @@ class SparkLLMClient:
         reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
         finish_reason = getattr(response.choices[0], "finish_reason", None) if response.choices else None
         is_research_batch = bool((performance_context or {}).get("analysis_batch"))
+        reasoning_exhaustion_ratio = float(
+            (performance_context or {}).get("reasoning_exhaustion_ratio", 0.95)
+        )
         reasoning_exhausted = (
             is_research_batch
             and isinstance(reasoning_tokens, int)
-            and reasoning_tokens >= int(request["max_tokens"] * 0.95)
+            and reasoning_tokens >= int(request["max_tokens"] * reasoning_exhaustion_ratio)
         )
         batch_token_exhausted = is_research_batch and (
             finish_reason == "length" or reasoning_exhausted
         )
         logger.info(
-            "Spark performance model=%s project_id=%s resource_id=%s analysis_batch=%s "
+            "Spark performance model=%s analysis_model=%s project_id=%s resource_id=%s analysis_batch=%s "
             "field=%s retrieved_candidates=%s selected_chunks=%s "
             "retrieved_chunks=%s context_chars=%s "
             "resource_type=%s attempt=%s requested_max_tokens=%s prompt_tokens=%s "
             "reasoning_tokens=%s completion_tokens=%s finish_reason=%s elapsed_ms=%s "
             "validation_error=%s normalize_result=%s batch_status=%s repair_triggered=%s",
             request["model"],
+            request["model"] if is_research_batch else None,
             (performance_context or {}).get("project_id"),
             (performance_context or {}).get("resource_id"),
             (performance_context or {}).get("analysis_batch"),

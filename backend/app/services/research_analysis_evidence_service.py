@@ -23,8 +23,9 @@ RESEARCH_ANALYSIS_FIELD_QUERIES: dict[str, tuple[str, ...]] = {
         "摘要 引言 探索 检验 study aim abstract introduction investigated examined",
     ),
     "aiLiteracyDimensions": (
-        "能力重点 核心能力 素养 认知 情感 协作 AI素养 ability competence literacy dimensions",
-        "人工智能素养框架 构念 指标 知识 技能 态度 AI literacy framework constructs indicators",
+        "能力重点 核心能力 素养 知识 技能 态度 ability competence competency literacy dimensions",
+        "高阶思维 批判性思维 设计思维 协作 能力框架 higher-order critical thinking design thinking competence framework",
+        "问题解决 学习成果 认知 情感 能力指标 problem solving learning outcomes cognition competency indicators",
     ),
     "teachingStrategies": (
         "教学策略 教学方法 学习支架 干预措施 教学活动 intervention teaching strategy scaffold procedure",

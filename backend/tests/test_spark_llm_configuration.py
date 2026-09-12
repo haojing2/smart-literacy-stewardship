@@ -14,7 +14,7 @@ def test_default_spark_openai_compatible_contract() -> None:
     assert fields["spark_lora_id"].default is None
     assert fields["spark_max_tokens"].default == 8192
     assert fields["spark_research_analysis_max_tokens"].default == 4096
-    assert fields["spark_research_analysis_model_id"].default is None
+    assert fields["spark_research_analysis_model_id"].default == "spark-x2.5-1.7b"
     assert fields["spark_timeout_seconds"].default == 120.0
 
 
@@ -97,6 +97,37 @@ def test_truncated_length_response_preserves_reasoning_tokens() -> None:
             ))
 
     assert caught.value.reasoning_tokens == 7000
+
+
+def test_research_probe_rejects_reasoning_at_ninety_percent() -> None:
+    usage = type("Usage", (), {
+        "prompt_tokens": 20,
+        "completion_tokens": 230,
+        "completion_tokens_details": type("Details", (), {"reasoning_tokens": 230})(),
+    })()
+    response = type("Response", (), {
+        "usage": usage,
+        "choices": [type("Choice", (), {
+            "finish_reason": "stop",
+            "message": type("Message", (), {"content": '{"ok":true}'})(),
+        })()],
+    })()
+    completion = AsyncMock()
+    completion.create.return_value = response
+    with patch("app.assistants.spark_client.AsyncOpenAI") as client_type:
+        client_type.return_value.chat.completions = completion
+        with pytest.raises(SparkOutputLengthError) as caught:
+            asyncio.run(SparkLLMClient().chat_json(
+                [{"role": "user", "content": "probe"}],
+                repair=False,
+                max_tokens=256,
+                performance_context={
+                    "analysis_batch": "PROBE",
+                    "reasoning_exhaustion_ratio": 0.90,
+                },
+            ))
+
+    assert caught.value.reasoning_tokens == 230
 
 
 def test_provider_error_preserves_safe_diagnostics() -> None:

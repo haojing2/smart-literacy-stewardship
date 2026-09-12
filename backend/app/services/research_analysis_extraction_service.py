@@ -78,6 +78,9 @@ class ResearchAnalysisExtractionService:
         project_title: str | None,
         project_topic: str | None,
     ) -> ResearchAnalysisExtractionResult:
+        probe = getattr(self.provider, "probe_research_analysis_model", None)
+        if callable(probe):
+            await probe(project_id=project_id, resource_id=resource_id)
         semaphore = asyncio.Semaphore(2)
         empty = ResearchAnalysisResult()
 

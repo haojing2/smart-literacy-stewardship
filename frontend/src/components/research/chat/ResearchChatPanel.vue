@@ -48,14 +48,14 @@ const empty = computed(() => props.resources.length === 0 && props.messages.leng
 const explorationScaffolds = computed(() => {
   const analysis = props.analysis
   return [
-    { key: 'researchTopic', label: '研究问题', question: '围绕当前课程主题，已有研究主要关注哪些教学或学习问题？', complete: Boolean(analysis?.researchTopic) },
+    { key: 'researchTopics', label: '研究问题', question: '围绕当前课程主题，已有研究主要关注哪些教学或学习问题？', complete: Boolean(analysis?.researchTopics.length) },
     { key: 'participants', label: '研究对象', question: '针对当前研究的目标对象是哪些学生群体？', complete: Boolean(analysis?.participants.length) },
     { key: 'aiLiteracyDimensions', label: '能力重点', question: '已有研究主要关注学生哪些能力或素养的发展？', complete: Boolean(analysis?.aiLiteracyDimensions.length) },
     { key: 'teachingStrategies', label: '教学策略', question: '哪些教学策略得到已有研究支持，并适合当前课程？', complete: Boolean(analysis?.teachingStrategies.length) },
-    { key: 'intervention', label: '实施条件', question: '这些教学策略通常在什么课时、环境和技术条件下实施？', complete: Boolean(analysis?.intervention) },
+    { key: 'intervention', label: '干预周期/实施时长', question: '研究中的干预或实施持续了多长时间？', complete: Boolean(analysis?.intervention) },
     { key: 'assessmentTools', label: '评价方式', question: '已有研究通常如何评价学生的学习效果？', complete: Boolean(analysis?.assessmentTools.length) },
     { key: 'mainFindings', label: '主要发现', question: '相关研究的主要研究发现是什么？', complete: Boolean(analysis?.mainFindings.length) },
-    { key: 'limitations', label: '局限与迁移', question: '这些研究有哪些局限，对当前学生和课堂有哪些适用边界？', complete: Boolean(analysis?.limitations.length) },
+    { key: 'limitations', label: '研究局限', question: '这些研究报告了哪些研究局限？', complete: Boolean(analysis?.limitations.length) },
   ].sort((left, right) => Number(left.complete) - Number(right.complete))
 })
 

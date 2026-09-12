@@ -6,8 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.assistants.spark_client import SparkContractError, SparkTimeoutError
+from app.assistants.spark_client import (
+    SparkContractError,
+    SparkOutputLengthError,
+    SparkTimeoutError,
+)
 from app.assistants.spark_research_assistant import SparkResearchAssistant
+from app.core.config import settings
 from app.schemas.research_assistant import (
     ResearchAnalysisPatch,
     ResearchAnalysisRequest,
@@ -209,6 +214,44 @@ def test_structured_provider_failure_is_propagated_for_failed_status_mapping() -
                 project_id=7, resource_id=11, project_title=None, project_topic=None
             )
         )
+
+
+def test_failed_model_probe_stops_before_retrieval_and_batches() -> None:
+    class ProbeFailProvider(SequenceProvider):
+        async def probe_research_analysis_model(self, **_kwargs):
+            raise SparkOutputLengthError("probe exhausted", reasoning_tokens=255)
+
+    provider = ProbeFailProvider([])
+    collector = RecordingEvidenceCollector()
+    service = ResearchAnalysisExtractionService(provider, collector)  # type: ignore[arg-type]
+
+    with pytest.raises(SparkOutputLengthError, match="probe exhausted"):
+        asyncio.run(service.extract(
+            project_id=7, resource_id=11, project_title=None, project_topic=None,
+        ))
+
+    assert provider.requests == []
+    assert collector.calls == []
+
+
+def test_research_analysis_model_probe_uses_tiny_independent_request(monkeypatch) -> None:
+    class ProbeClient:
+        def __init__(self):
+            self.kwargs = None
+
+        async def chat_json(self, _messages, **kwargs):
+            self.kwargs = kwargs
+            return {"ok": True}
+
+    monkeypatch.setattr(settings, "spark_research_analysis_model_id", "spark-x2.5-1.7b")
+    client = ProbeClient()
+    asyncio.run(SparkResearchAssistant(client=client).probe_research_analysis_model(  # type: ignore[arg-type]
+        project_id=7, resource_id=11,
+    ))
+
+    assert client.kwargs["max_tokens"] == 256
+    assert client.kwargs["model_id"] == "spark-x2.5-1.7b"
+    assert client.kwargs["performance_context"]["reasoning_exhaustion_ratio"] == 0.90
 
 
 def test_one_failed_batch_keeps_other_batch_results() -> None:

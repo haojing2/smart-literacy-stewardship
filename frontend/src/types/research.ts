@@ -44,17 +44,49 @@ export interface ResearchResource {
 
 export interface ResearchAnalysis {
   participants: string[]
-  researchTopic: string | null
+  researchTopics: string[]
   aiLiteracyDimensions: string[]
   teachingStrategies: string[]
   intervention: string | null
   assessmentTools: string[]
   mainFindings: string[]
   limitations: string[]
+  teachingImplications: string | null
   fieldSources?: Record<string, 'MOCK' | 'TEACHER'>
   teacherConfirmed?: boolean
   version?: number
+  generationStatus?: AnalysisGenerationStatus
 }
+
+export type ResearchAnalysisContentKey =
+  | 'participants'
+  | 'researchTopics'
+  | 'aiLiteracyDimensions'
+  | 'teachingStrategies'
+  | 'intervention'
+  | 'assessmentTools'
+  | 'mainFindings'
+  | 'limitations'
+  | 'teachingImplications'
+
+export interface ResearchAnalysisFieldConfig {
+  key: ResearchAnalysisContentKey
+  label: string
+  editorType: 'textarea'
+  isList: boolean
+}
+
+export const RESEARCH_ANALYSIS_FIELDS: readonly ResearchAnalysisFieldConfig[] = [
+  { key: 'participants', label: '研究对象', editorType: 'textarea', isList: true },
+  { key: 'researchTopics', label: '研究问题/主题', editorType: 'textarea', isList: true },
+  { key: 'aiLiteracyDimensions', label: '能力重点', editorType: 'textarea', isList: true },
+  { key: 'teachingStrategies', label: '教学策略', editorType: 'textarea', isList: true },
+  { key: 'intervention', label: '干预周期/实施时长', editorType: 'textarea', isList: false },
+  { key: 'assessmentTools', label: '评价工具', editorType: 'textarea', isList: true },
+  { key: 'mainFindings', label: '主要研究发现', editorType: 'textarea', isList: true },
+  { key: 'limitations', label: '研究局限', editorType: 'textarea', isList: true },
+  { key: 'teachingImplications', label: '教学启示', editorType: 'textarea', isList: false },
+] as const
 
 export interface EvidenceReadiness {
   readinessScore: number

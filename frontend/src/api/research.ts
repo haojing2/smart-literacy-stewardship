@@ -24,6 +24,21 @@ export interface BackendAnalysisPayload {
   assessmentTools: string[]
   mainFindings: string[]
   limitations: string[]
+  teachingImplications: string | null
+}
+
+export interface ResearchAnalysisVersionPayload {
+  sessionId: number
+  analysisId: number
+  version: number
+  generationStatus: 'PENDING' | 'READY' | 'FAILED'
+  latestAnalysis: ResearchAnalysis
+  fieldSources: Record<string, 'MOCK' | 'TEACHER'>
+  teacherConfirmed: boolean
+  teacherConfirmedAt?: string | null
+  readiness: EvidenceReadiness
+  evidenceDraftGenerated?: boolean
+  evidenceCardId?: number | null
 }
 
 export interface BackendChatMessage {
@@ -44,6 +59,9 @@ export interface BackendSessionPayload {
   messages: BackendChatMessage[]
   latestAnalysis: BackendAnalysisPayload | null
   analysisGenerationStatus?: 'PENDING' | 'READY' | 'FAILED' | null
+  fieldSources?: Record<string, 'MOCK' | 'TEACHER'>
+  teacherConfirmed?: boolean
+  version?: number
   readiness: (EvidenceReadiness & { ready?: boolean }) | null
   evidenceCardId?: number | null
   createdAt: string
@@ -139,30 +157,20 @@ export const sendResearchMessage = (sessionId: number, content: string) =>
   }, { timeout: RESEARCH_AGENT_TIMEOUT_MS })
 
 export const updateResearchAnalysis = (sessionId: number, analysis: ResearchAnalysis) =>
-  http.put<
-    ApiEnvelope<{
-      sessionId: number
-      analysisId: number
-      version: number
-      generationStatus: 'PENDING' | 'READY' | 'FAILED'
-      latestAnalysis: ResearchAnalysis
-      readiness: EvidenceReadiness
-      evidenceDraftGenerated?: boolean
-      evidenceCardId?: number | null
-    }>
-  >(`/research-chat/sessions/${sessionId}/analysis`, {
+  http.put<ApiEnvelope<ResearchAnalysisVersionPayload>>(`/research-chat/sessions/${sessionId}/analysis`, {
     participants: analysis.participants,
-    researchTopic: analysis.researchTopic,
+    researchTopics: analysis.researchTopics,
     aiLiteracyDimensions: analysis.aiLiteracyDimensions,
     teachingStrategies: analysis.teachingStrategies,
     intervention: analysis.intervention,
     assessmentTools: analysis.assessmentTools,
     mainFindings: analysis.mainFindings,
     limitations: analysis.limitations,
+    teachingImplications: analysis.teachingImplications,
   })
 
 export const confirmResearchAnalysis = (sessionId: number) =>
-  http.post<ApiEnvelope<{ latestAnalysis: ResearchAnalysis; readiness: EvidenceReadiness }>>(
+  http.post<ApiEnvelope<ResearchAnalysisVersionPayload>>(
     `/research-chat/sessions/${sessionId}/analysis/confirm`,
   )
 
