@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -19,7 +20,11 @@ from app.schemas.research_assistant import (
 )
 from app.services.evidence_card_draft_service import EvidenceCardDraftService
 from app.services.project_knowledge_service import ProjectKnowledgeSource
-from app.services.research_analysis_service import ResearchAnalysisService
+from app.services.research_analysis_service import (
+    EvidenceCardGenerationNotReadyError,
+    ResearchAnalysisService,
+)
+from app.services.research_analysis_state_service import ResearchAnalysisStateService
 from app.services.research_chat_service import ResearchChatService
 
 
@@ -35,6 +40,21 @@ def ready_analysis() -> ResearchAnalysisResult:
         limitations=["Single-school sample"],
         source_excerpt="Grounded source excerpt.",
     )
+
+
+def analysis_with_recognized_fields(count: int) -> ResearchAnalysisResult:
+    values = {
+        "research_subjects": ["Grade 5 students"],
+        "research_topics": ["AI verification"],
+        "ai_literacy_dimensions": ["INFORMATION_VERIFICATION"],
+        "teaching_strategies": ["Compare multiple sources"],
+        "intervention_duration": "8 weeks",
+        "assessment_tools": ["Performance rubric"],
+        "main_findings": ["Verification performance improved"],
+        "limitations": ["Single-school sample"],
+        "teaching_implications": "Teach source triangulation",
+    }
+    return ResearchAnalysisResult(**dict(list(values.items())[:count]))
 
 
 def create_workspace(
@@ -86,6 +106,49 @@ def create_workspace(
     db.add(record)
     db.commit()
     return project, resource, session, record
+
+
+def test_recognized_count_uses_canonical_subjects_and_intervention_fields() -> None:
+    analysis = ResearchAnalysisResult(
+        research_subjects=["", "Grade 5 students"],
+        intervention_duration=" 8 weeks ",
+    )
+
+    assert ResearchAnalysisStateService.recognized_count(analysis) == 2
+
+
+def test_generate_evidence_card_rejects_five_recognized_fields(
+    db: Session, teacher: SysUser
+) -> None:
+    _, _, session, _ = create_workspace(
+        db, teacher, analysis=analysis_with_recognized_fields(5)
+    )
+
+    with pytest.raises(
+        EvidenceCardGenerationNotReadyError,
+        match="至少完成6项研究解析后才能生成证据卡。",
+    ):
+        ResearchAnalysisService(db).generate_evidence_card(
+            current_user_id=teacher.id,
+            session_id=session.id,
+        )
+
+
+@pytest.mark.parametrize("recognized_fields", [6, 9])
+def test_generate_evidence_card_succeeds_at_or_above_six_recognized_fields(
+    db: Session, teacher: SysUser, recognized_fields: int
+) -> None:
+    _, _, session, analysis = create_workspace(
+        db, teacher, analysis=analysis_with_recognized_fields(recognized_fields)
+    )
+
+    card = ResearchAnalysisService(db).generate_evidence_card(
+        current_user_id=teacher.id,
+        session_id=session.id,
+    )
+
+    assert card.research_analysis_id == analysis.id
+    assert card.evidence_card_id is not None
 
 
 def test_project_chat_without_ready_resources_never_calls_provider(

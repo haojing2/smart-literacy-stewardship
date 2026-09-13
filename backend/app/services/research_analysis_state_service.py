@@ -21,8 +21,23 @@ EDITABLE_FIELD_SOURCES = {
     "teachingImplications": "teaching_implications",
 }
 
+EVIDENCE_CARD_MIN_RECOGNIZED_FIELDS = 6
+
 
 class ResearchAnalysisStateService:
+    @staticmethod
+    def recognized_count(analysis: ResearchAnalysisResult) -> int:
+        count = 0
+        for internal_field in EDITABLE_FIELD_SOURCES.values():
+            value = getattr(analysis, internal_field)
+            if isinstance(value, list):
+                count += any(
+                    isinstance(item, str) and bool(item.strip()) for item in value
+                )
+            elif isinstance(value, str):
+                count += bool(value.strip())
+        return count
+
     @staticmethod
     def readiness(
         analysis: ResearchAnalysisResult,

@@ -13,6 +13,7 @@ from app.schemas.research_assistant import (
 from app.services.evidence_readiness_service import EvidenceReadinessService
 from app.services.evidence_card_draft_service import EvidenceCardDraftService
 from app.services.research_analysis_state_service import (
+    EVIDENCE_CARD_MIN_RECOGNIZED_FIELDS,
     ResearchAnalysisStateService,
 )
 
@@ -114,12 +115,8 @@ class ResearchAnalysisService:
             if resource is not None else self._require_latest_session_analysis(session.id)
         )
         data = ResearchAnalysisResult.model_validate(analysis.structured_data_json)
-        recognized_count = sum((bool(value) if isinstance(value, list) else bool((value or "").strip())) for value in (
-            data.research_topics, data.participants, data.ai_literacy_dimensions,
-            data.teaching_strategies, data.intervention, data.assessment_tools,
-            data.main_findings, data.limitations, data.teaching_implications,
-        ))
-        if recognized_count < 6:
+        recognized_count = ResearchAnalysisStateService.recognized_count(data)
+        if recognized_count < EVIDENCE_CARD_MIN_RECOGNIZED_FIELDS:
             raise EvidenceCardGenerationNotReadyError(
                 "至少完成6项研究解析后才能生成证据卡。"
             )
