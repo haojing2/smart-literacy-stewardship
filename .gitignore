@@ -62,6 +62,12 @@ backend/tests/*
 !backend/tests/test_resource_creation_recovery.py
 !backend/tests/test_teaching_resource_generation_contract.py
 !backend/tests/test_resource_context_pipeline.py
+!backend/tests/test_resource_generation_planner.py
+!backend/tests/test_resource_generation_parts.py
+!backend/tests/test_resource_generation_executor.py
+!backend/tests/test_resource_generation_assembler.py
+!backend/tests/test_resource_generation_progressive_api.py
+!backend/tests/test_resource_generation_database_schema.py
 !backend/tests/test_research_chat_followup_retrieval.py
 !backend/tests/test_spark_llm_configuration.py
 !backend/tests/test_evidence_card_lifecycle_sync.py
