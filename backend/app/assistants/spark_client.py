@@ -140,12 +140,13 @@ class SparkLLMClient:
             finish_reason == "length" or reasoning_exhausted
         )
         logger.info(
-            "Spark performance model=%s analysis_model=%s project_id=%s resource_id=%s analysis_batch=%s "
+            "Spark performance stage=%s model=%s analysis_model=%s project_id=%s resource_id=%s analysis_batch=%s "
             "field=%s retrieved_candidates=%s selected_chunks=%s "
-            "retrieved_chunks=%s context_chars=%s "
+            "retrieved_chunks=%s context_chars=%s context_input_chars=%s context_output_chars=%s "
             "resource_type=%s attempt=%s requested_max_tokens=%s prompt_tokens=%s "
             "reasoning_tokens=%s completion_tokens=%s finish_reason=%s elapsed_ms=%s "
             "validation_error=%s normalize_result=%s batch_status=%s repair_triggered=%s",
+            (performance_context or {}).get("stage"),
             request["model"],
             request["model"] if is_research_batch else None,
             (performance_context or {}).get("project_id"),
@@ -156,6 +157,14 @@ class SparkLLMClient:
             (performance_context or {}).get("selected_chunks"),
             (performance_context or {}).get("retrieved_chunks"),
             (performance_context or {}).get("context_chars"),
+            (performance_context or {}).get("context_input_chars"),
+            (
+                len(response.choices[0].message.content)
+                if response.choices
+                and isinstance(response.choices[0].message.content, str)
+                and (performance_context or {}).get("stage") == "resource_context"
+                else None
+            ),
             (performance_context or {}).get("resource_type"),
             (performance_context or {}).get("attempt", 1),
             request["max_tokens"],

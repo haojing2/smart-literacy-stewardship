@@ -70,8 +70,13 @@ class Settings(BaseSettings):
     spark_model_id: str = "spark-x2.5-4b"
     spark_lora_id: str | None = None
     spark_max_tokens: int = 8192
+    spark_resource_context_enabled: bool = True
+    spark_resource_context_model_id: str = "spark-x2.5-1.7b"
+    spark_resource_context_max_tokens: int = 4096
+    spark_resource_generation_model_id: str = "spark-x2.5-4b"
     spark_resource_max_tokens: int = 8192
     spark_resource_retry_max_tokens: int = 16384
+    spark_resource_max_retry_tokens: int = 32768
     spark_research_analysis_max_tokens: int = 4096
     spark_research_analysis_model_id: str = "spark-x2.5-1.7b"
     spark_timeout_seconds: float = 120.0

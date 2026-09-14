@@ -21,9 +21,11 @@ class SequencedJsonClient:
     def __init__(self, responses: list[dict[str, object]]) -> None:
         self.responses = responses
         self.requests: list[list[dict[str, str]]] = []
+        self.kwargs: list[dict[str, object]] = []
 
     async def chat_json(self, messages, **kwargs):
         self.requests.append(messages)
+        self.kwargs.append(kwargs)
         return self.responses.pop(0)
 
 
@@ -33,8 +35,8 @@ def _request(resource_type: ResourceType = ResourceType.DISCUSSION) -> TeachingR
         "project": {"title": "人工智能素养", "grade": 7},
         "objectives": [{"id": 1, "content": "比较不同回答"}],
         "pedagogy": {"method": "discussion"},
-        "assessments": [{"objectiveId": 1, "method": "observation"}],
-        "activities": [{"id": 1, "name": "小组讨论"}],
+        "assessments": [{"id": 20, "objectiveId": 1, "method": "observation"}],
+        "activities": [{"id": 10, "sequenceNo": 1, "name": "小组讨论", "duration": 20, "objectiveRefs": [1]}],
         "researchEvidence": [{"finding": "不应发送"}],
         "courseBlueprint": {"duplicate": True},
     })
@@ -45,7 +47,15 @@ def test_resource_prompt_uses_fixed_template_without_full_json_schema() -> None:
 
     assert "resultSchema" not in prompt
     assert "researchBasedEvidence" not in prompt["context"]
-    assert "courseBlueprint" not in prompt["context"]["confirmedCourseDesign"]
+    assert set(prompt["context"]) == {"authoritativeFacts", "normalizedContext", "resourceSettings"}
+    assert "courseBlueprint" not in prompt["context"]
+    assert prompt["context"]["authoritativeFacts"]["objectives"] == [
+        {"id": 1, "content": "比较不同回答"},
+    ]
+    assert prompt["context"]["authoritativeFacts"]["activities"] == [{
+        "id": 10, "sequenceNo": 1, "name": "小组讨论", "duration": 20,
+        "objectiveRefs": [1],
+    }]
     assert prompt["outputTemplate"] == RESOURCE_OUTPUT_TEMPLATES[ResourceType.DISCUSSION]
     assert [block["key"] for block in prompt["outputTemplate"]["content"]["blocks"]] == [
         "question_1", "question_2", "question_3",
@@ -90,7 +100,7 @@ def test_root_block_payload_is_normalized_without_llm_repair() -> None:
     assert len(client.requests) == 1
 
 
-def test_resource_length_retry_is_limited_to_8192_then_16384() -> None:
+def test_real_resource_truncation_retries_8192_then_16384_then_32768() -> None:
     valid = RESOURCE_OUTPUT_TEMPLATES[ResourceType.DISCUSSION]
 
     class LengthThenSuccessClient:
@@ -99,8 +109,8 @@ def test_resource_length_retry_is_limited_to_8192_then_16384() -> None:
 
         async def chat_json(self, messages, **kwargs):
             self.max_tokens.append(kwargs["max_tokens"])
-            if len(self.max_tokens) == 1:
-                raise SparkOutputLengthError("truncated", reasoning_tokens=8000)
+            if len(self.max_tokens) < 3:
+                raise SparkOutputLengthError("truncated", reasoning_tokens=0)
             return valid
 
     client = LengthThenSuccessClient()
@@ -111,7 +121,27 @@ def test_resource_length_retry_is_limited_to_8192_then_16384() -> None:
         resource_type=ResourceType.DISCUSSION,
     ))
 
-    assert client.max_tokens == [8192, 16384]
+    assert client.max_tokens == [8192, 16384, 32768]
+
+
+def test_resource_reasoning_exhaustion_does_not_expand_token_budget() -> None:
+    class ReasoningExhaustedClient:
+        def __init__(self) -> None:
+            self.max_tokens: list[int] = []
+
+        async def chat_json(self, messages, **kwargs):
+            self.max_tokens.append(kwargs["max_tokens"])
+            raise SparkOutputLengthError("reasoning exhausted", reasoning_tokens=8000)
+
+    client = ReasoningExhaustedClient()
+    assistant = SparkResearchAssistant(client=client)  # type: ignore[arg-type]
+    with pytest.raises(SparkOutputLengthError):
+        asyncio.run(assistant._from_messages(
+            build_teaching_resource_messages(_request()),
+            TeachingResourceGenerationResult,
+            resource_type=ResourceType.DISCUSSION,
+        ))
+    assert client.max_tokens == [8192]
 
 
 def test_assessment_legacy_table_is_normalized_for_stable_rendering() -> None:
@@ -157,14 +187,20 @@ def test_assessment_repair_sends_only_invalid_blocks_errors_and_template() -> No
     invalid = copy.deepcopy(RESOURCE_OUTPUT_TEMPLATES[ResourceType.ASSESSMENT])
     invalid["content"]["blocks"][1]["content"]["rows"][0].pop("evidence")
     repaired = copy.deepcopy(RESOURCE_OUTPUT_TEMPLATES[ResourceType.ASSESSMENT])
-    client = SequencedJsonClient([invalid, repaired])
+    context = {
+        "activitySummaries": [{"activityId": 10, "sequenceNo": 1, "summary": "讨论"}],
+        "assessmentSummaries": [{"assessmentId": 20, "objectiveId": 1, "summary": "观察"}],
+    }
+    client = SequencedJsonClient([context, invalid, repaired])
     assistant = SparkResearchAssistant(client=client)  # type: ignore[arg-type]
 
     asyncio.run(assistant.generate_teaching_resource(_request(ResourceType.ASSESSMENT)))
 
-    assert len(client.requests) == 2
-    assert len(client.requests[1]) == 2
-    repair = json.loads(client.requests[1][1]["content"])
+    assert len(client.requests) == 3
+    assert len(client.requests[2]) == 2
+    repair = json.loads(client.requests[2][1]["content"])
     assert set(repair) == {"task", "validationError", "invalidBlockJson", "outputTemplate"}
     assert "context" not in repair
     assert repair["task"] == "Fix JSON structure only. Do not regenerate or rewrite the teaching content."
+    assert client.kwargs[1]["model_id"] == "spark-x2.5-4b"
+    assert client.kwargs[2]["model_id"] == "spark-x2.5-4b"

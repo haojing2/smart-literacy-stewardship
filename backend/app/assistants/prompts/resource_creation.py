@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from app.schemas.resource_creation import (
+    ResourceContextCompressionResult,
     ResourceDraftContent,
     ResourceType,
     TeachingResourceGenerationRequest,
@@ -192,20 +193,101 @@ TEACHING_RESOURCE_STRUCTURE_RULES = [
 ]
 
 
+def _authoritative_facts(request: TeachingResourceGenerationRequest) -> dict[str, object]:
+    return {
+        "course": {
+            "title": request.project.title,
+            "topic": request.project.topic,
+            "grade": request.project.grade,
+            "lessonMinutes": request.project.lesson_minutes,
+            "classSize": request.project.class_size,
+        },
+        "objectives": [
+            {"id": item.get("id"), "content": item.get("content")}
+            for item in request.objectives
+        ],
+        "activities": [
+            {
+                "id": item.get("id"),
+                "sequenceNo": item.get("sequenceNo", item.get("sequence_no")),
+                "name": item.get("name"),
+                "duration": item.get("duration"),
+                "objectiveRefs": item.get("objectiveRefs", item.get("objective_refs", [])),
+            }
+            for item in request.activities
+        ],
+        "assessments": [
+            {
+                "id": item.get("id"),
+                "objectiveId": item.get("objectiveId", item.get("objective_id")),
+            }
+            for item in request.assessments
+        ],
+    }
+
+
+def _compact_text(values: list[object], max_length: int = 1500) -> str | None:
+    meaningful = [str(value).strip() for value in values if value not in (None, "", [], {})]
+    if not meaningful:
+        return None
+    return " | ".join(meaningful)[:max_length]
+
+
+def _deterministic_compact_context(request: TeachingResourceGenerationRequest) -> dict[str, object]:
+    project = request.project
+    context: dict[str, object] = {
+        "courseSummary": _compact_text([project.topic, project.additional_requirements]),
+        "learnerProfile": _compact_text([
+            project.student_level, project.student_experience, project.ai_access_mode,
+            project.devices,
+        ], 1200),
+        "pedagogySummary": _compact_text([
+            request.pedagogy.get(key)
+            for key in ("description", "suitableFor", "riskNote", "primaryMethodId", "secondaryMethodId")
+        ]),
+        "implementationConstraints": [str(item) for item in project.constraints],
+        "activitySummaries": [
+            {
+                "activityId": item.get("id"),
+                "sequenceNo": item.get("sequenceNo", item.get("sequence_no")),
+                "summary": _compact_text([
+                    item.get(key) for key in (
+                        "coreTask", "teacherAction", "studentAction", "aiRole",
+                        "assessmentNote", "scaffolds",
+                    )
+                ]),
+            }
+            for item in request.activities
+        ],
+        "assessmentSummaries": [
+            {
+                "assessmentId": item.get("id"),
+                "objectiveId": item.get("objectiveId", item.get("objective_id")),
+                "summary": _compact_text([
+                    item.get(key) for key in ("task", "studentEvidence", "criteria")
+                ]),
+            }
+            for item in request.assessments
+        ],
+        "generationFocus": [],
+    }
+    return {key: value for key, value in context.items() if value not in (None, [], {})}
+
+
 def build_teaching_resource_messages(
     request: TeachingResourceGenerationRequest,
+    prepared_context: ResourceContextCompressionResult | None = None,
 ) -> list[dict[str, str]]:
     if request.resource_type == ResourceType.PPT:
         raise ValueError("PPT is reserved for a dedicated model/API")
     task = RESOURCE_PROMPT_TEMPLATES[request.resource_type]
-    confirmed_design: dict[str, object] = {}
-    for name in ("objectives", "pedagogy", "activities", "assessments"):
-        value = getattr(request, name)
-        if value:
-            confirmed_design[name] = value
     context = {
-        "projectContext": request.project.model_dump(mode="json", by_alias=True, exclude_none=True),
-        "confirmedCourseDesign": confirmed_design,
+        "authoritativeFacts": _authoritative_facts(request),
+        "normalizedContext": (
+            prepared_context.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if prepared_context is not None
+            else _deterministic_compact_context(request)
+        ),
         "resourceSettings": {
             "commonSettings": request.common_settings,
             "currentTypeSettings": request.resource_settings,
@@ -213,16 +295,16 @@ def build_teaching_resource_messages(
     }
     payload = {
         "contextPriority": [
-            "confirmedCourseDesign is the highest instructional constraint",
-            "projectContext defines learner and implementation constraints",
+            "authoritativeFacts is immutable and is the highest instructional constraint",
+            "normalizedContext supplies compact narrative teaching context",
             "resourceSettings controls presentation only",
         ],
         "context": context,
         "resourceSpecificTask": task,
         "outputRules": [
             "Transform the confirmed course design into a classroom-ready resource; do not redesign it.",
-            "Do not change learning objectives, core pedagogy, activity order, or assessment logic.",
-            "If settings conflict with confirmed design, follow confirmed design.",
+            "Do not change learning objectives, activity IDs, activity order, durations, objective references, or assessment mappings.",
+            "If settings conflict with authoritative facts, follow authoritative facts.",
             "Do not invent missing context or evidence.",
             "Return JSON only, without markdown fences or explanation.",
             "Use unique non-empty block keys and non-empty block content.",

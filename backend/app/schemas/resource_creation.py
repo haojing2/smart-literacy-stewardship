@@ -138,6 +138,28 @@ class TeachingResourceGenerationRequest(ResourceCreationSchema):
     course_blueprint: dict[str, Any] | None = None
 
 
+class ResourceContextActivitySummary(ResourceCreationSchema):
+    activity_id: int
+    sequence_no: int
+    summary: str = Field(min_length=1, max_length=1500)
+
+
+class ResourceContextAssessmentSummary(ResourceCreationSchema):
+    assessment_id: int
+    objective_id: int
+    summary: str = Field(min_length=1, max_length=1500)
+
+
+class ResourceContextCompressionResult(ResourceCreationSchema):
+    course_summary: str | None = Field(default=None, max_length=1500)
+    learner_profile: str | None = Field(default=None, max_length=1200)
+    pedagogy_summary: str | None = Field(default=None, max_length=1500)
+    implementation_constraints: list[str] = Field(default_factory=list)
+    activity_summaries: list[ResourceContextActivitySummary] = Field(default_factory=list)
+    assessment_summaries: list[ResourceContextAssessmentSummary] = Field(default_factory=list)
+    generation_focus: list[str] = Field(default_factory=list)
+
+
 class TeachingResourceGenerationResult(ResourceCreationSchema):
     title: str = Field(min_length=1, max_length=255)
     content: ResourceDraftContent

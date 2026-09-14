@@ -31,6 +31,7 @@ from app.assistants.prompts.resource_creation import (
     normalize_assessment_content,
     validate_generated_resource,
 )
+from app.assistants.prompts.resource_context import build_resource_context_messages
 from app.schemas.course_design import (
     CourseActivityProposal, CourseActivityRegenerationRequest, CourseAssessmentGenerationRequest,
     CourseAssessmentGenerationResult, CourseBlueprintGenerationRequest, CourseBlueprintGenerationResult,
@@ -47,6 +48,7 @@ from app.schemas.research_assistant import (
 )
 from app.services.research_source_validation_service import validate_source_excerpt
 from app.schemas.resource_creation import (
+    ResourceContextCompressionResult,
     ResourceBlockTransformProviderRequest, ResourceBlockTransformResult, ResourceRevisionProposalRequest,
     ResourceRevisionProposalResult, ResourceSettingsRecommendationRequest, ResourceSettingsRecommendationResult,
     ResourceType, TeachingResourceGenerationRequest, TeachingResourceGenerationResult, TeachingResourceReviewRequest,
@@ -453,7 +455,8 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                 raise SparkContractError(str(exc)) from exc
 
         try:
-            messages = build_teaching_resource_messages(request)
+            prepared_context = await self._prepare_resource_context(request)
+            messages = build_teaching_resource_messages(request, prepared_context=prepared_context)
         except Exception as exc:
             logger.exception("Teaching resource generation failed stage=prompt_build exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
             raise
@@ -461,6 +464,7 @@ class SparkResearchAssistant(ResearchAssistantProvider):
             return await self._from_messages(
                 messages, TeachingResourceGenerationResult, validate,
                 resource_type=request.resource_type,
+                model_id=settings.spark_resource_generation_model_id,
             )
         except (SparkResponseParseError, SparkContractError) as exc:
             logger.exception("Teaching resource generation failed stage=schema_validation exception_type=%s resource_type=%s", type(exc).__name__, request.resource_type.value)
@@ -510,7 +514,8 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         try:
             if resource_type:
                 payload = await self._resource_chat_json(
-                    messages, resource_type=resource_type, repair_triggered=False
+                    messages, resource_type=resource_type, repair_triggered=False,
+                    model_id=model_id,
                 )
             else:
                 payload = await self._client.chat_json(
@@ -623,7 +628,8 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         ]
         if resource_type:
             repaired = await self._resource_chat_json(
-                repair_messages, resource_type=resource_type, repair_triggered=True
+                repair_messages, resource_type=resource_type, repair_triggered=True,
+                model_id=model_id,
             )
         else:
             repaired = await self._client.chat_json(
@@ -665,10 +671,12 @@ class SparkResearchAssistant(ResearchAssistantProvider):
         *,
         resource_type: ResourceType,
         repair_triggered: bool,
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         token_limits = (
             settings.spark_resource_max_tokens,
             settings.spark_resource_retry_max_tokens,
+            settings.spark_resource_max_retry_tokens,
         )
         for attempt, max_tokens in enumerate(token_limits, start=1):
             try:
@@ -676,13 +684,29 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                     messages,
                     repair=False,
                     max_tokens=max_tokens,
+                    model_id=model_id or settings.spark_resource_generation_model_id,
                     performance_context={
                         "resource_type": resource_type.value,
+                        "stage": "resource_generation",
                         "attempt": attempt,
                         "repair_triggered": repair_triggered,
                     },
                 )
-            except SparkOutputLengthError:
+            except SparkOutputLengthError as exc:
+                reasoning_ratio = (
+                    exc.reasoning_tokens / max_tokens
+                    if isinstance(exc.reasoning_tokens, int) and max_tokens > 0
+                    else 0.0
+                )
+                if reasoning_ratio >= 0.90:
+                    logger.warning(
+                        "Resource generation reasoning exhausted resource_type=%s model=%s requested_max_tokens=%s reasoning_tokens=%s",
+                        resource_type.value,
+                        model_id or settings.spark_resource_generation_model_id,
+                        max_tokens,
+                        exc.reasoning_tokens,
+                    )
+                    raise
                 if attempt == len(token_limits):
                     raise
                 logger.warning(
@@ -691,6 +715,95 @@ class SparkResearchAssistant(ResearchAssistantProvider):
                     repair_triggered,
                 )
         raise AssertionError("resource token retry loop exhausted")
+
+    async def _prepare_resource_context(
+        self,
+        request: TeachingResourceGenerationRequest,
+    ) -> ResourceContextCompressionResult | None:
+        if not settings.spark_resource_context_enabled:
+            logger.info(
+                "Resource context disabled resource_type=%s stage=resource_context model=%s fallback=true",
+                request.resource_type.value,
+                settings.spark_resource_context_model_id,
+            )
+            return None
+        messages = build_resource_context_messages(request)
+        input_chars = sum(len(message["content"]) for message in messages)
+        started_at = time.perf_counter()
+        payload: dict[str, Any] | None = None
+        try:
+            payload = await self._client.chat_json(
+                messages,
+                repair=False,
+                max_tokens=settings.spark_resource_context_max_tokens,
+                model_id=settings.spark_resource_context_model_id,
+                performance_context={
+                    "resource_type": request.resource_type.value,
+                    "stage": "resource_context",
+                    "context_chars": input_chars,
+                    "context_input_chars": input_chars,
+                    "repair_triggered": False,
+                },
+            )
+            result = ResourceContextCompressionResult.model_validate(payload, extra="forbid")
+            self._validate_resource_context(request, result)
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+            logger.warning(
+                "Resource context validation failed resource_type=%s stage=resource_context model=%s input_chars=%s output_chars=%s elapsed_ms=%s fallback=true exception_type=%s",
+                request.resource_type.value,
+                settings.spark_resource_context_model_id,
+                input_chars,
+                len(json.dumps(payload, ensure_ascii=False)) if payload is not None else 0,
+                elapsed_ms,
+                type(exc).__name__,
+            )
+            return None
+        output_chars = len(json.dumps(payload, ensure_ascii=False))
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "Resource context prepared resource_type=%s stage=resource_context model=%s input_chars=%s output_chars=%s elapsed_ms=%s fallback=false",
+            request.resource_type.value,
+            settings.spark_resource_context_model_id,
+            input_chars,
+            output_chars,
+            elapsed_ms,
+        )
+        return result
+
+    @staticmethod
+    def _validate_resource_context(
+        request: TeachingResourceGenerationRequest,
+        context: ResourceContextCompressionResult,
+    ) -> None:
+        activities = {
+            item.get("id"): item.get("sequenceNo", item.get("sequence_no"))
+            for item in request.activities
+            if isinstance(item.get("id"), int)
+        }
+        seen_activity_ids: set[int] = set()
+        for summary in context.activity_summaries:
+            if (
+                summary.activity_id not in activities
+                or activities[summary.activity_id] != summary.sequence_no
+                or summary.activity_id in seen_activity_ids
+            ):
+                raise ValueError("Resource context returned an unknown or changed activity")
+            seen_activity_ids.add(summary.activity_id)
+        assessments = {
+            item.get("id"): item.get("objectiveId", item.get("objective_id"))
+            for item in request.assessments
+            if isinstance(item.get("id"), int)
+        }
+        seen_assessment_ids: set[int] = set()
+        for summary in context.assessment_summaries:
+            if (
+                summary.assessment_id not in assessments
+                or assessments[summary.assessment_id] != summary.objective_id
+                or summary.assessment_id in seen_assessment_ids
+            ):
+                raise ValueError("Resource context returned an unknown or changed assessment")
+            seen_assessment_ids.add(summary.assessment_id)
 
     @staticmethod
     def _fingerprint(request: BaseModel) -> str:
